@@ -52,7 +52,7 @@ class BLEManager:
             logging.error(f"Error connecting to device")
             self.connect_fail_callback(sys.exc_info())
 
-    async def notification_callback(self, characteristic, data: bytearray):
+    async def notification_callback(self, _, data: bytearray):
         logging.info("notification_callback")
         await self.data_callback(data)
 
