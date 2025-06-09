@@ -84,7 +84,7 @@ class DCChargerClient(BaseClient):
         alarms = {}
         data['charging_status'] = CHARGING_STATE.get(bytes_to_int(bs, 2, 1))
         
-        byte = bytes_to_int(bs, 4, 1)
+        byte = bytes_to_int(bs, 4, 2)
         alarms['low_temp_shutdown'] = (byte >> 11) & 1
         alarms['bms_overcharge_protection'] = (byte >> 10) & 1
         alarms['starter_reverse_polarity'] = (byte >> 9) & 1
@@ -92,7 +92,7 @@ class DCChargerClient(BaseClient):
         alarms['alternator_over_current'] = (byte >> 4) & 1
         alarms['controller_over_temp_2'] = (byte >> 3) & 1
 
-        byte = bytes_to_int(bs, 6, 1)
+        byte = bytes_to_int(bs, 6, 2)
         alarms['solar_reverse_polarity'] = (byte >> 12) & 1
         alarms['solar_over_voltage'] = (byte >> 9) & 1
         alarms['solar_over_current'] = (byte >> 7) & 1

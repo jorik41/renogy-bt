@@ -28,7 +28,8 @@ def parse_temperature(raw_value, unit):
     return format_temperature(celcius, unit)
 
 def format_temperature(celcius, unit = 'F'):
-    return (celcius * 9/5) + 32 if unit.strip() == 'F' else celcius
+    normalized = unit.strip().upper()
+    return (celcius * 9 / 5) + 32 if normalized == 'F' else celcius
 
 def filter_fields(data, fields_str):
     fields = [x.strip() for x in fields_str.split(',')] if len(fields_str) > 0 else [] # trim spaces
