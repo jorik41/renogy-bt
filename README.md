@@ -71,7 +71,7 @@ If you have multiple devices connected to a single BT-2 module (daisy chained or
 |  Battery | 255 | 33, 34, 35 | 48, 49, 50 |
 |  Inverter | 255, 32 | 32 | 32 |
 
- If you receive no response or garbled data with above ids, connect a single device to the Hub at a time and use the default broadcast address of 255 in `config.ini` to find out the actual `device_id` from output log. Then use this device Id to connect in Hub mode.
+ If you receive no response or garbled data with above ids, connect a single device to the Hub at a time and use the default broadcast address of 255 in `config.ini` to find out the actual `device_id` from output log. Then use this device Id to connect in Hub mode. When using a Hub with multiple devices, `device_id` in `config.ini` can contain a comma separated list (e.g. `48,49,50`).
 
 ## Compatibility
 | Device | Type | Adapter | Supported |
