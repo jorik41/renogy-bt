@@ -10,7 +10,8 @@ PVOUTPUT_URL = 'http://pvoutput.org/service/r2/addstatus.jsp'
 class DataLogger:
     def __init__(self, config: ConfigParser):
         self.config = config
-        self.ha_config_sent = False
+        # keep track of which devices have had HA discovery config published
+        self.ha_config_sent = set()
 
     def log_remote(self, json_data):
         headers = { "Authorization" : f"Bearer {self.config['remote_logging']['auth_header']}" }
@@ -34,25 +35,30 @@ class DataLogger:
         password = self.config['mqtt']['password']
         auth = None if not user or not password else {"username": user, "password": password}
 
+        alias = self.config['device']['alias']
+        device_id = json_data.get('device_id')
+        alias_id = f"{alias}_{device_id}" if device_id is not None else alias
+
+        topic_base = self.config['mqtt']['topic']
+        topic = f"{topic_base.rstrip('/')}/{alias_id}"
+
         publish.single(
-            self.config['mqtt']['topic'], payload=json.dumps(json_data),
+            topic, payload=json.dumps(json_data),
             hostname=self.config['mqtt']['server'], port=self.config['mqtt'].getint('port'),
             auth=auth, client_id="renogy-bt"
         )
 
         if self.config['mqtt'].getboolean('homeassistant_discovery', fallback=False):
-            self.publish_home_assistant_config(auth, json_data)
+            self.publish_home_assistant_config(auth, json_data, alias_id, topic)
 
-    def publish_home_assistant_config(self, auth, json_data):
-        if self.ha_config_sent:
+    def publish_home_assistant_config(self, auth, json_data, alias_id, state_topic):
+        if alias_id in self.ha_config_sent:
             return
 
-        alias = self.config['device']['alias']
-        topic_prefix = f"homeassistant/sensor/{alias}"
-        state_topic = self.config['mqtt']['topic']
+        topic_prefix = f"homeassistant/sensor/{alias_id}"
         device = {
-            "identifiers": [alias],
-            "name": alias,
+            "identifiers": [alias_id],
+            "name": alias_id,
             "manufacturer": "Renogy",
             "model": self.config['device']['type']
         }
@@ -62,10 +68,10 @@ class DataLogger:
         for key in json_data.keys():
             config_topic = f"{topic_prefix}/{key}/config"
             payload = {
-                "name": f"{alias} {key}",
+                "name": f"{alias_id} {key}",
                 "state_topic": state_topic,
                 "value_template": f"{{{{ value_json.{key} }}}}",
-                "unique_id": f"renogy_bt_{alias}_{key}",
+                "unique_id": f"renogy_bt_{alias_id}_{key}",
                 "device": device
             }
 
@@ -85,7 +91,7 @@ class DataLogger:
                 retain=True
             )
 
-        self.ha_config_sent = True
+        self.ha_config_sent.add(alias_id)
 
     def _guess_unit_class(self, key, temp_unit):
         lkey = key.lower()

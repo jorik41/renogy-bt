@@ -92,19 +92,21 @@ If you have multiple devices connected to a single BT-2 module (daisy chained or
 
 Supports logging data to local MQTT brokers like [Mosquitto](https://mosquitto.org/) or [Home Assistant](https://www.home-assistant.io/) dashboards. You can also log it to third party cloud services like [PVOutput](https://pvoutput.org/). See [config.ini](https://github.com/cyrils/renogy-bt1/blob/main/config.ini) for more details. Note that free PVOutput accounts have a cap of one request per minute.
 
+When multiple `device_id`s are configured (e.g. `48,49` when using a BT‑2 hub), data from each device is published to a unique MQTT topic in the form `<base_topic>/<alias>_<device_id>`. For a single device the `<device_id>` suffix is still added, ensuring every device has its own topic.
+
 If you enable `homeassistant_discovery` under the `[mqtt]` section in `config.ini`, sensors will be automatically created in Home Assistant using MQTT discovery. Alternatively you can configure them manually as shown below:
 
-Example config to add to your home assistant `configuration.yaml`:
+Example config to add to your home assistant `configuration.yaml` (using the topic generated for device `BT-TH-XXXX_48` as an example):
 ```yaml
 mqtt:
   sensor:
     - name: "Solar Power"
-      state_topic: "solar/state"
+      state_topic: "solar/state/BT-TH-XXXX_48"
       device_class: "power"
       unit_of_measurement: "W"
       value_template: "{{ value_json.pv_power }}"
     - name: "Battery SOC"
-      state_topic: "solar/state"
+      state_topic: "solar/state/BT-TH-XXXX_48"
       device_class: "battery"
       unit_of_measurement: "%"
       value_template: "{{ value_json.battery_percentage }}"
