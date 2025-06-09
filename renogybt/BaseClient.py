@@ -25,7 +25,10 @@ class BaseClient:
         self.poll_timer = None
         self.read_timeout = None
         self.data = {}
-        self.device_id = self.config['device'].getint('device_id')
+        device_id_str = self.config['device'].get('device_id')
+        self.device_ids = [int(x.strip()) for x in device_id_str.split(',') if x.strip()]
+        self.device_index = 0
+        self.device_id = self.device_ids[self.device_index]
         self.sections = []
         self.section_index = 0
         self.loop = None
@@ -80,7 +83,15 @@ class BaseClient:
                 self.section_index = 0
                 self.on_read_operation_complete()
                 self.data = {}
-                await self.check_polling()
+                if self.device_index >= len(self.device_ids) - 1:
+                    self.device_index = 0
+                    self.device_id = self.device_ids[self.device_index]
+                    await self.check_polling()
+                else:
+                    self.device_index += 1
+                    self.device_id = self.device_ids[self.device_index]
+                    await asyncio.sleep(0.5)
+                    await self.read_section()
             else:
                 self.section_index += 1
                 await asyncio.sleep(0.5)
