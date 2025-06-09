@@ -10,6 +10,7 @@ PVOUTPUT_URL = 'http://pvoutput.org/service/r2/addstatus.jsp'
 class DataLogger:
     def __init__(self, config: ConfigParser):
         self.config = config
+        self.ha_config_sent = False
 
     def log_remote(self, json_data):
         headers = { "Authorization" : f"Bearer {self.config['remote_logging']['auth_header']}" }
@@ -17,7 +18,7 @@ class DataLogger:
         logging.info("Log remote 200") if req.status_code == 200 else logging.error(f"Log remote error {req.status_code}")
 
     def log_mqtt(self, json_data):
-        logging.info(f"mqtt logging")
+        logging.info("mqtt logging")
         user = self.config['mqtt']['user']
         password = self.config['mqtt']['password']
         auth = None if not user or not password else {"username": user, "password": password}
@@ -27,6 +28,70 @@ class DataLogger:
             hostname=self.config['mqtt']['server'], port=self.config['mqtt'].getint('port'),
             auth=auth, client_id="renogy-bt"
         )
+
+        if self.config['mqtt'].getboolean('homeassistant_discovery', fallback=False):
+            self.publish_home_assistant_config(auth, json_data)
+
+    def publish_home_assistant_config(self, auth, json_data):
+        if self.ha_config_sent:
+            return
+
+        alias = self.config['device']['alias']
+        topic_prefix = f"homeassistant/sensor/{alias}"
+        state_topic = self.config['mqtt']['topic']
+        device = {
+            "identifiers": [alias],
+            "name": alias,
+            "manufacturer": "Renogy",
+            "model": self.config['device']['type']
+        }
+
+        temperature_unit = self.config['data']['temperature_unit'].strip()
+
+        for key in json_data.keys():
+            config_topic = f"{topic_prefix}/{key}/config"
+            payload = {
+                "name": f"{alias} {key}",
+                "state_topic": state_topic,
+                "value_template": f"{{{{ value_json.{key} }}}}",
+                "unique_id": f"renogy_bt_{alias}_{key}",
+                "device": device
+            }
+
+            unit, device_class = self._guess_unit_class(key, temperature_unit)
+            if unit:
+                payload["unit_of_measurement"] = unit
+            if device_class:
+                payload["device_class"] = device_class
+
+            publish.single(
+                config_topic,
+                payload=json.dumps(payload),
+                hostname=self.config['mqtt']['server'],
+                port=self.config['mqtt'].getint('port'),
+                auth=auth,
+                client_id="renogy-bt",
+                retain=True
+            )
+
+        self.ha_config_sent = True
+
+    def _guess_unit_class(self, key, temp_unit):
+        lkey = key.lower()
+        if 'temperature' in lkey:
+            unit = '°F' if temp_unit == 'F' else '°C'
+            return unit, 'temperature'
+        if lkey.endswith('voltage'):
+            return 'V', 'voltage'
+        if lkey.endswith('current'):
+            return 'A', 'current'
+        if lkey.endswith('power'):
+            return 'W', 'power'
+        if lkey.endswith('percentage') or 'soc' in lkey:
+            return '%', 'battery'
+        if lkey.endswith('frequency'):
+            return 'Hz', 'frequency'
+        return None, None
 
     def log_pvoutput(self, json_data):
         date_time = datetime.now().strftime("d=%Y%m%d&t=%H:%M")

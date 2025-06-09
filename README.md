@@ -92,6 +92,8 @@ If you have multiple devices connected to a single BT-2 module (daisy chained or
 
 Supports logging data to local MQTT brokers like [Mosquitto](https://mosquitto.org/) or [Home Assistant](https://www.home-assistant.io/) dashboards. You can also log it to third party cloud services like [PVOutput](https://pvoutput.org/). See [config.ini](https://github.com/cyrils/renogy-bt1/blob/main/config.ini) for more details. Note that free PVOutput accounts have a cap of one request per minute.
 
+If you enable `homeassistant_discovery` under the `[mqtt]` section in `config.ini`, sensors will be automatically created in Home Assistant using MQTT discovery. Alternatively you can configure them manually as shown below:
+
 Example config to add to your home assistant `configuration.yaml`:
 ```yaml
 mqtt:
