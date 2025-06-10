@@ -52,6 +52,40 @@ def add_calculated_values(data):
             pass
     return data
 
+def combine_battery_readings(data_map):
+    """Combine multiple battery readings into a single dictionary."""
+    combined = {"device_id": "combined"}
+    total_capacity = 0
+    total_remaining = 0
+    total_power = 0
+
+    for dev_id, d in data_map.items():
+        capacity = d.get("capacity") or 0
+        remaining = d.get("remaining_charge") or 0
+        power = d.get("power") or 0
+
+        total_capacity += capacity
+        total_remaining += remaining
+        total_power += power
+
+        cells = [v for k, v in d.items() if k.startswith("cell_voltage_") and isinstance(v, (int, float))]
+        if cells:
+            combined[f"battery_{dev_id}_cell_voltage_min"] = min(cells)
+            combined[f"battery_{dev_id}_cell_voltage_max"] = max(cells)
+
+        temps = [v for k, v in d.items() if k.startswith("temperature_") and isinstance(v, (int, float))]
+        if temps:
+            combined[f"battery_{dev_id}_temperature_min"] = min(temps)
+            combined[f"battery_{dev_id}_temperature_max"] = max(temps)
+
+    combined["combined_capacity"] = round(total_capacity, 3)
+    combined["combined_remaining_charge"] = round(total_remaining, 3)
+    combined["combined_power"] = round(total_power, 2)
+    if total_capacity:
+        combined["average_charge_percentage"] = round((total_remaining / total_capacity) * 100, 2)
+
+    return combined
+
 CRC16_LOW_BYTES = (
     0x00, 0xC0, 0xC1, 0x01, 0xC3, 0x03, 0x02, 0xC2, 0xC6, 0x06, 0x07, 0xC7, 0x05, 0xC5, 0xC4, 0x04,
     0xCC, 0x0C, 0x0D, 0xCD, 0x0F, 0xCF, 0xCE, 0x0E, 0x0A, 0xCA, 0xCB, 0x0B, 0xC9, 0x09, 0x08, 0xC8,
