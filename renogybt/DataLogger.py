@@ -80,6 +80,8 @@ class DataLogger:
                 payload["unit_of_measurement"] = unit
             if device_class:
                 payload["device_class"] = device_class
+            if isinstance(json_data.get(key), (int, float)):
+                payload["state_class"] = "measurement"
 
             publish.single(
                 config_topic,
@@ -106,6 +108,8 @@ class DataLogger:
             return 'W', 'power'
         if lkey.endswith('percentage') or 'soc' in lkey:
             return '%', 'battery'
+        if 'amp_hour' in lkey or lkey.endswith('_ah'):
+            return 'Ah', None
         if lkey.endswith('frequency'):
             return 'Hz', 'frequency'
         return None, None
