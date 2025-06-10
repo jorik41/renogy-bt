@@ -53,20 +53,29 @@ def add_calculated_values(data):
     return data
 
 def combine_battery_readings(data_map):
-    """Combine multiple battery readings into a single dictionary."""
+    """Combine up to eight battery readings into a single dictionary.
+
+    Calculates cumulative capacity, remaining charge, power, current and
+    charge percentage across all provided batteries.
+    """
     combined = {"device_id": "combined"}
+    if len(data_map) > 8:
+        raise ValueError("combine_battery_readings supports up to 8 batteries")
     total_capacity = 0
     total_remaining = 0
     total_power = 0
+    total_current = 0
 
     for dev_id, d in data_map.items():
         capacity = d.get("capacity") or 0
         remaining = d.get("remaining_charge") or 0
         power = d.get("power") or 0
+        current = d.get("current") or 0
 
         total_capacity += capacity
         total_remaining += remaining
         total_power += power
+        total_current += current
 
         cells = [v for k, v in d.items() if k.startswith("cell_voltage_") and isinstance(v, (int, float))]
         if cells:
@@ -81,8 +90,9 @@ def combine_battery_readings(data_map):
     combined["combined_capacity"] = round(total_capacity, 3)
     combined["combined_remaining_charge"] = round(total_remaining, 3)
     combined["combined_power"] = round(total_power, 2)
+    combined["combined_current"] = round(total_current, 2)
     if total_capacity:
-        combined["average_charge_percentage"] = round((total_remaining / total_capacity) * 100, 2)
+        combined["combined_charge_percentage"] = round((total_remaining / total_capacity) * 100, 2)
 
     return combined
 
