@@ -37,6 +37,21 @@ def filter_fields(data, fields_str):
         return {key: data[key] for key in fields}
     return data
 
+def add_calculated_values(data):
+    if 'voltage' in data and 'current' in data:
+        try:
+            data.setdefault('power', round(data['voltage'] * data['current'], 2))
+        except TypeError:
+            pass
+    if 'remaining_charge' in data and 'capacity' in data:
+        try:
+            if data['capacity']:
+                level = (data['remaining_charge'] / data['capacity']) * 100
+                data.setdefault('battery_level', round(level, 2))
+        except TypeError:
+            pass
+    return data
+
 CRC16_LOW_BYTES = (
     0x00, 0xC0, 0xC1, 0x01, 0xC3, 0x03, 0x02, 0xC2, 0xC6, 0x06, 0x07, 0xC7, 0x05, 0xC5, 0xC4, 0x04,
     0xCC, 0x0C, 0x0D, 0xCD, 0x0F, 0xCF, 0xCE, 0x0E, 0x0A, 0xCA, 0xCB, 0x0B, 0xC9, 0x09, 0x08, 0xC8,
