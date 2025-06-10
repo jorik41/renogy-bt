@@ -108,6 +108,8 @@ class DataLogger:
             return 'W', 'power'
         if lkey.endswith('percentage') or 'soc' in lkey:
             return '%', 'battery'
+        if lkey.endswith('level') and 'battery' in lkey:
+            return '%', 'battery'
         if 'amp_hour' in lkey or lkey.endswith('_ah'):
             return 'Ah', None
         if lkey.endswith('frequency'):

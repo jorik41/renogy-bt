@@ -14,6 +14,7 @@ data_logger: DataLogger = DataLogger(config)
 
 # the callback func when you receive data
 def on_data_received(client, data):
+    Utils.add_calculated_values(data)
     filtered_data = Utils.filter_fields(data, config['data']['fields'])
     logging.info(f"{client.ble_manager.device.name} => {filtered_data}")
     if config['remote_logging'].getboolean('enabled'):
