@@ -12,11 +12,27 @@ config = configparser.ConfigParser(inline_comment_prefixes=('#'))
 config.read(config_path)
 data_logger: DataLogger = DataLogger(config)
 
+# store battery data when reading multiple batteries
+battery_map = {}
+
 # the callback func when you receive data
 def on_data_received(client, data):
     Utils.add_calculated_values(data)
     filtered_data = Utils.filter_fields(data, config['data']['fields'])
     logging.info(f"{client.ble_manager.device.name} => {filtered_data}")
+
+    # collect data for combined MQTT message when multiple batteries are read
+    if config['device']['type'] == 'RNG_BATT' and len(client.device_ids) > 1:
+        dev_id = data.get('device_id')
+        if dev_id is not None:
+            battery_map[dev_id] = data
+        if len(battery_map) == len(client.device_ids):
+            combined = Utils.combine_battery_readings(battery_map)
+            filtered_combined = Utils.filter_fields(combined, config['data']['fields'])
+            logging.info(f"combined => {filtered_combined}")
+            if config['mqtt'].getboolean('enabled'):
+                data_logger.log_mqtt(json_data=filtered_combined)
+            battery_map.clear()
     if config['remote_logging'].getboolean('enabled'):
         data_logger.log_remote(json_data=filtered_data)
     if config['mqtt'].getboolean('enabled'):
