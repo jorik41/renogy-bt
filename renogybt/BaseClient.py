@@ -47,7 +47,16 @@ class BaseClient:
             self.__on_error("KeyboardInterrupt")
 
     async def connect(self):
-        self.ble_manager = BLEManager(mac_address=self.config['device']['mac_addr'], alias=self.config['device']['alias'], on_data=self.on_data_received, on_connect_fail=self.__on_connect_fail, notify_char_uuid=NOTIFY_CHAR_UUID, write_char_uuid=WRITE_CHAR_UUID, write_service_uuid=WRITE_SERVICE_UUID)
+        self.ble_manager = BLEManager(
+            mac_address=self.config['device']['mac_addr'],
+            alias=self.config['device']['alias'],
+            on_data=self.on_data_received,
+            on_connect_fail=self.__on_connect_fail,
+            notify_char_uuid=NOTIFY_CHAR_UUID,
+            write_char_uuid=WRITE_CHAR_UUID,
+            write_service_uuid=WRITE_SERVICE_UUID,
+            adapter=self.config['device'].get('adapter'),
+        )
         await self.ble_manager.discover()
 
         if not self.ble_manager.device:
