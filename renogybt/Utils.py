@@ -1,3 +1,8 @@
+# Utility helpers for parsing data and calculating values.
+
+import json
+import os
+
 # Reads data from a list of bytes, and converts to an int
 def bytes_to_int(bs, offset, length, signed = False, scale = 1):
         ret = 0
@@ -51,6 +56,46 @@ def add_calculated_values(data):
         except TypeError:
             pass
     return data
+
+def update_energy_totals(data, interval_sec, file_path='energy_totals.json', alias=None):
+    """Update stored energy totals based on current voltage and current.
+
+    The totals are persisted in *file_path* as JSON and keyed by *alias* so
+    multiple devices can be tracked independently. The function also injects the
+    updated totals back into ``data``.
+    """
+    if 'voltage' not in data or 'current' not in data:
+        return
+    try:
+        voltage = float(data['voltage'])
+        current = float(data['current'])
+    except (TypeError, ValueError):
+        return
+
+    alias_key = alias or 'default'
+    try:
+        with open(file_path, 'r') as fp:
+            totals_map = json.load(fp)
+    except (OSError, json.JSONDecodeError):
+        totals_map = {}
+
+    totals = totals_map.get(alias_key, {'energy_in_kwh': 0, 'energy_out_kwh': 0})
+
+    power_w = voltage * current
+    delta_kwh = power_w * interval_sec / 3600
+    if current >= 0:
+        totals['energy_in_kwh'] = round(totals.get('energy_in_kwh', 0) + delta_kwh, 3)
+    else:
+        totals['energy_out_kwh'] = round(totals.get('energy_out_kwh', 0) + abs(delta_kwh), 3)
+
+    totals_map[alias_key] = totals
+    try:
+        with open(file_path, 'w') as fp:
+            json.dump(totals_map, fp)
+    except OSError:
+        pass
+
+    data.update(totals)
 
 def combine_battery_readings(data_map):
     """Combine up to eight battery readings into a single dictionary.

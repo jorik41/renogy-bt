@@ -11,6 +11,7 @@ config_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), config_f
 config = configparser.ConfigParser(inline_comment_prefixes=('#'))
 config.read(config_path)
 data_logger: DataLogger = DataLogger(config)
+energy_file = os.path.join(os.path.dirname(config_path), 'energy_totals.json')
 
 # store battery data when reading multiple batteries
 battery_map = {}
@@ -18,6 +19,15 @@ battery_map = {}
 # the callback func when you receive data
 def on_data_received(client, data):
     Utils.add_calculated_values(data)
+    alias = config['device']['alias']
+    dev_id = data.get('device_id')
+    alias_id = f"{alias}_{dev_id}" if dev_id is not None else alias
+    Utils.update_energy_totals(
+        data,
+        interval_sec=config['data'].getint('poll_interval'),
+        file_path=energy_file,
+        alias=alias_id,
+    )
     filtered_data = Utils.filter_fields(data, config['data']['fields'])
     logging.info(f"{client.ble_manager.device.name} => {filtered_data}")
 
