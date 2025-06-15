@@ -99,6 +99,8 @@ The combined payload also exposes `combined_energy_in_wh` and `combined_energy_o
 Energy totals for each device are written to `energy_totals.json`. Each update
 stores the accumulated mAh with a timestamp so the `energy_in_wh` and
 `energy_out_wh` values reflect the real energy transferred between polls.
+These totals are published as energy sensors via MQTT and can be selected
+directly in the Home Assistant energy dashboard.
 
 If you enable `homeassistant_discovery` under the `[mqtt]` section in `config.ini`, sensors will be automatically created in Home Assistant using MQTT discovery. Alternatively you can configure them manually as shown below:
 

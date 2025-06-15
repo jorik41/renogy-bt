@@ -81,7 +81,10 @@ class DataLogger:
             if device_class:
                 payload["device_class"] = device_class
             if isinstance(json_data.get(key), (int, float)):
-                payload["state_class"] = "measurement"
+                if "energy" in key.lower():
+                    payload["state_class"] = "total_increasing"
+                else:
+                    payload["state_class"] = "measurement"
 
             publish.single(
                 config_topic,
@@ -112,6 +115,9 @@ class DataLogger:
             return '%', 'battery'
         if 'amp_hour' in lkey or lkey.endswith('_ah'):
             return 'Ah', None
+        if 'energy' in lkey:
+            unit = 'kWh' if 'kwh' in lkey else 'Wh'
+            return unit, 'energy'
         if lkey.endswith('frequency'):
             return 'Hz', 'frequency'
         return None, None
