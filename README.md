@@ -98,7 +98,10 @@ When multiple `device_id`s are configured (e.g. `48,49` when using a BT‑2 hub)
 The combined payload also exposes `combined_energy_in_wh` and `combined_energy_out_wh` which sum the energy in and out across all batteries.
 Energy totals for each device are written to `energy_totals.json`. Each update
 stores the accumulated mAh with a timestamp so the `energy_in_wh` and
-`energy_out_wh` values reflect the real energy transferred between polls.
+`energy_out_wh` values reflect the real energy transferred between polls. These
+energy sensors are published with `device_class: energy` and
+`state_class: total_increasing` so they can be added directly to the Home
+Assistant Energy dashboard.
 
 If you enable `homeassistant_discovery` under the `[mqtt]` section in `config.ini`, sensors will be automatically created in Home Assistant using MQTT discovery. Alternatively you can configure them manually as shown below:
 
