@@ -82,11 +82,15 @@ def update_energy_totals(data, interval_sec=None, file_path='energy_totals.json'
         totals_map = {}
 
     now = time.time()
-    totals = totals_map.get(alias_key, {'energy_in_wh': 0, 'energy_out_wh': 0, 'timestamp': now})
-    if 'energy_in_kwh' in totals:
-        totals['energy_in_wh'] = totals.pop('energy_in_kwh') * 1000
-    if 'energy_out_kwh' in totals:
-        totals['energy_out_wh'] = totals.pop('energy_out_kwh') * 1000
+    totals = totals_map.get(alias_key, {
+        'energy_in_kwh': 0,
+        'energy_out_kwh': 0,
+        'timestamp': now
+    })
+    if 'energy_in_wh' in totals:
+        totals['energy_in_kwh'] = totals.pop('energy_in_wh') / 1000
+    if 'energy_out_wh' in totals:
+        totals['energy_out_kwh'] = totals.pop('energy_out_wh') / 1000
 
     last_ts = totals.get('timestamp')
     if last_ts is None:
@@ -97,11 +101,11 @@ def update_energy_totals(data, interval_sec=None, file_path='energy_totals.json'
         delta_t = interval_sec
 
     power_w = voltage * current
-    delta_wh = power_w * delta_t / 3600
+    delta_kwh = power_w * delta_t / 3600 / 1000
     if current >= 0:
-        totals['energy_in_wh'] = round(totals.get('energy_in_wh', 0) + delta_wh, 3)
+        totals['energy_in_kwh'] = round(totals.get('energy_in_kwh', 0) + delta_kwh, 3)
     else:
-        totals['energy_out_wh'] = round(totals.get('energy_out_wh', 0) + abs(delta_wh), 3)
+        totals['energy_out_kwh'] = round(totals.get('energy_out_kwh', 0) + abs(delta_kwh), 3)
 
     totals['timestamp'] = now
     totals_map[alias_key] = totals
@@ -111,7 +115,7 @@ def update_energy_totals(data, interval_sec=None, file_path='energy_totals.json'
     except OSError:
         pass
 
-    data.update({k: totals[k] for k in ('energy_in_wh', 'energy_out_wh')})
+    data.update({k: totals[k] for k in ('energy_in_kwh', 'energy_out_kwh')})
 
 def combine_battery_readings(data_map):
     """Combine up to eight battery readings into a single dictionary.
@@ -134,8 +138,8 @@ def combine_battery_readings(data_map):
         remaining = d.get("remaining_charge") or 0
         power = d.get("power") or 0
         current = d.get("current") or 0
-        energy_in = d.get("energy_in_wh") or 0
-        energy_out = d.get("energy_out_wh") or 0
+        energy_in = d.get("energy_in_kwh") or 0
+        energy_out = d.get("energy_out_kwh") or 0
 
         total_capacity += capacity
         total_remaining += remaining
@@ -158,8 +162,8 @@ def combine_battery_readings(data_map):
     combined["combined_remaining_charge"] = round(total_remaining, 3)
     combined["combined_power"] = round(total_power, 2)
     combined["combined_current"] = round(total_current, 2)
-    combined["combined_energy_in_wh"] = round(total_energy_in, 3)
-    combined["combined_energy_out_wh"] = round(total_energy_out, 3)
+    combined["combined_energy_in_kwh"] = round(total_energy_in, 3)
+    combined["combined_energy_out_kwh"] = round(total_energy_out, 3)
     if total_capacity:
         combined["combined_charge_percentage"] = round((total_remaining / total_capacity) * 100, 2)
 
