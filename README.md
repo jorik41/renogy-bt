@@ -135,7 +135,7 @@ $json_data = json_decode(file_get_contents('php://input'), true);
 ```sh
 */5 * * * * python3 /path/to/renogy-bt/example.py config.ini #runs every 5 mins
 ```
-If you want to monitor real-time data, turn on polling in `config.ini` for continues streaming (default interval is 60 secs). You may also register it as a [service](https://github.com/cyrils/renogy-bt/issues/77) for added reliability.
+If you want to monitor real-time data, turn on polling in `config.ini` for continues streaming (default interval is 10 secs). You may also register it as a [service](https://github.com/cyrils/renogy-bt/issues/77) for added reliability.
 
 ### Disclaimer
 
