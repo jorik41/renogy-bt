@@ -110,17 +110,23 @@ def combine_battery_readings(data_map):
     total_remaining = 0
     total_power = 0
     total_current = 0
+    total_energy_in = 0
+    total_energy_out = 0
 
     for dev_id, d in data_map.items():
         capacity = d.get("capacity") or 0
         remaining = d.get("remaining_charge") or 0
         power = d.get("power") or 0
         current = d.get("current") or 0
+        energy_in = d.get("energy_in_kwh") or 0
+        energy_out = d.get("energy_out_kwh") or 0
 
         total_capacity += capacity
         total_remaining += remaining
         total_power += power
         total_current += current
+        total_energy_in += energy_in
+        total_energy_out += energy_out
 
         cells = [v for k, v in d.items() if k.startswith("cell_voltage_") and isinstance(v, (int, float))]
         if cells:
@@ -136,6 +142,8 @@ def combine_battery_readings(data_map):
     combined["combined_remaining_charge"] = round(total_remaining, 3)
     combined["combined_power"] = round(total_power, 2)
     combined["combined_current"] = round(total_current, 2)
+    combined["combined_energy_in_kwh"] = round(total_energy_in, 3)
+    combined["combined_energy_out_kwh"] = round(total_energy_out, 3)
     if total_capacity:
         combined["combined_charge_percentage"] = round((total_remaining / total_capacity) * 100, 2)
 
