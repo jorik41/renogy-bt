@@ -8,12 +8,7 @@ class RoverHistoryClient(BaseClient):
         super().__init__(config)
         self.on_data_callback = on_data_callback
         self.on_error_callback = on_error_callback
-        self.data = {
-            'function': 'READ',
-            'daily_power_generation': [],
-            'daily_charge_ah': [],
-            'daily_max_power': []
-        }
+        self.reset_device_data()
         self.sections = [
             {'register': 61446, 'words': 10, 'parser': self.parse_historical_data},
             {'register': 61445, 'words': 10, 'parser': self.parse_historical_data},
@@ -25,6 +20,14 @@ class RoverHistoryClient(BaseClient):
         ]
 
     def parse_historical_data(self, bs):
-        self.data['daily_power_generation'].append(bytes_to_int(bs, 19, 2))
-        self.data['daily_charge_ah'].append(bytes_to_int(bs, 15, 2))
-        self.data['daily_max_power'].append(bytes_to_int(bs, 11, 2))
+        self.data.setdefault('daily_power_generation', []).append(bytes_to_int(bs, 19, 2))
+        self.data.setdefault('daily_charge_ah', []).append(bytes_to_int(bs, 15, 2))
+        self.data.setdefault('daily_max_power', []).append(bytes_to_int(bs, 11, 2))
+
+    def reset_device_data(self):
+        self.data = {
+            'function': 'READ',
+            'daily_power_generation': [],
+            'daily_charge_ah': [],
+            'daily_max_power': []
+        }

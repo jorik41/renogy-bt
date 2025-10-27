@@ -5,27 +5,32 @@ import os
 import time
 
 # Reads data from a list of bytes, and converts to an int
-def bytes_to_int(bs, offset, length, signed = False, scale = 1):
-        ret = 0
-        if len(bs) < (offset + length):
-            return ret
-        if length > 0:
-            byteorder='big'
-            start = offset
-            end = offset + length
-        else:
-            byteorder='little'
-            start = offset + length + 1
-            end = offset + 1
-        return round(int.from_bytes(bs[start:end], byteorder = byteorder, signed = signed) * scale, 2)
+def bytes_to_int(bs, offset, length, signed=False, scale=1):
+    if length == 0:
+        return 0
+    if length > 0:
+        start = offset
+        end = offset + length
+        byteorder = 'big'
+    else:
+        start = offset + length + 1
+        end = offset + 1
+        byteorder = 'little'
+
+    if start < 0 or end > len(bs):
+        return 0
+
+    value = int.from_bytes(bs[start:end], byteorder=byteorder, signed=signed)
+    return round(value * scale, 2)
 
 # Converts an integer into 2 bytes (16 bits)
 # Returns either the first or second byte as an int
 def int_to_bytes(i, pos = 0):
+    value = i & 0xFFFF
     if pos == 0:
-        return int(format(i, '016b')[:8], 2)
+        return (value >> 8) & 0xFF
     if pos == 1:
-        return int(format(i, '016b')[8:], 2)
+        return value & 0xFF
     return 0
 
 def parse_temperature(raw_value, unit):
@@ -109,6 +114,9 @@ def update_energy_totals(data, interval_sec=None, file_path='energy_totals.json'
 
     totals['timestamp'] = now
     totals_map[alias_key] = totals
+    directory = os.path.dirname(file_path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
     try:
         with open(file_path, 'w') as fp:
             json.dump(totals_map, fp)

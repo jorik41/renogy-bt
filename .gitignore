@@ -5,3 +5,6 @@ solar-reader.py
 RelayApp.py
 relay.py
 .DS_Store
+venv/
+energy_totals.json
+__pycache__/

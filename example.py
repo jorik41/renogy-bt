@@ -1,17 +1,23 @@
-import logging
 import configparser
+import logging
 import os
 import sys
+from pathlib import Path
+
 from renogybt import DCChargerClient, InverterClient, RoverClient, RoverHistoryClient, BatteryClient, DataLogger, Utils
 
 logging.basicConfig(level=logging.INFO)
 
 config_file = sys.argv[1] if len(sys.argv) > 1 else 'config.ini'
-config_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), config_file)
+base_dir = Path(__file__).resolve().parent
+config_path = (base_dir / config_file).resolve()
+if not config_path.exists():
+    logging.error("Config file not found: %s", config_path)
+    sys.exit(1)
 config = configparser.ConfigParser(inline_comment_prefixes=('#'))
-config.read(config_path)
+config.read(str(config_path))
 data_logger: DataLogger = DataLogger(config)
-energy_file = os.path.join(os.path.dirname(config_path), 'energy_totals.json')
+energy_file = str((config_path.parent / 'energy_totals.json').resolve())
 
 # store battery data when reading multiple batteries
 battery_map = {}
@@ -24,11 +30,12 @@ def on_data_received(client, data):
     alias_id = f"{alias}_{dev_id}" if dev_id is not None else alias
     Utils.update_energy_totals(
         data,
-        interval_sec=config['data'].getint('poll_interval'),
+        interval_sec=config['data'].getint('poll_interval', fallback=0),
         file_path=energy_file,
         alias=alias_id,
     )
-    filtered_data = Utils.filter_fields(data, config['data']['fields'])
+    fields = config['data'].get('fields', fallback='')
+    filtered_data = Utils.filter_fields(data, fields)
     logging.info(f"{client.ble_manager.device.name} => {filtered_data}")
 
     # collect data for combined MQTT message when multiple batteries are read
@@ -38,7 +45,7 @@ def on_data_received(client, data):
             battery_map[dev_id] = data
         if len(battery_map) == len(client.device_ids):
             combined = Utils.combine_battery_readings(battery_map)
-            filtered_combined = Utils.filter_fields(combined, config['data']['fields'])
+            filtered_combined = Utils.filter_fields(combined, fields)
             logging.info(f"combined => {filtered_combined}")
             if config['mqtt'].getboolean('enabled'):
                 data_logger.log_mqtt(json_data=filtered_combined)

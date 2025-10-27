@@ -1,7 +1,7 @@
 import json
 import logging
-import requests
 import paho.mqtt.publish as publish
+import requests
 from configparser import ConfigParser
 from datetime import datetime
 
@@ -25,7 +25,11 @@ class DataLogger:
             if req.status_code == 200:
                 logging.info("Log remote 200")
             else:
-                logging.error(f"Log remote error {req.status_code}")
+                logging.error(
+                    "Log remote error %s: %s",
+                    req.status_code,
+                    req.text[:200],
+                )
         except requests.RequestException as exc:
             logging.error(f"Log remote failed: {exc}")
 
@@ -42,11 +46,18 @@ class DataLogger:
         topic_base = self.config['mqtt']['topic']
         topic = f"{topic_base.rstrip('/')}/{alias_id}"
 
-        publish.single(
-            topic, payload=json.dumps(json_data),
-            hostname=self.config['mqtt']['server'], port=self.config['mqtt'].getint('port'),
-            auth=auth, client_id="renogy-bt"
-        )
+        try:
+            publish.single(
+                topic,
+                payload=json.dumps(json_data),
+                hostname=self.config['mqtt']['server'],
+                port=self.config['mqtt'].getint('port'),
+                auth=auth,
+                client_id="renogy-bt",
+            )
+        except Exception as exc:  # paho raises generic Exception
+            logging.error("mqtt publish failed: %s", exc)
+            return
 
         if self.config['mqtt'].getboolean('homeassistant_discovery', fallback=False):
             self.publish_home_assistant_config(auth, json_data, alias_id, topic)
@@ -86,15 +97,19 @@ class DataLogger:
                 else:
                     payload["state_class"] = "measurement"
 
-            publish.single(
-                config_topic,
-                payload=json.dumps(payload),
-                hostname=self.config['mqtt']['server'],
-                port=self.config['mqtt'].getint('port'),
-                auth=auth,
-                client_id="renogy-bt",
-                retain=True
-            )
+            try:
+                publish.single(
+                    config_topic,
+                    payload=json.dumps(payload),
+                    hostname=self.config['mqtt']['server'],
+                    port=self.config['mqtt'].getint('port'),
+                    auth=auth,
+                    client_id="renogy-bt",
+                    retain=True,
+                )
+            except Exception as exc:
+                logging.error("Home Assistant discovery publish failed: %s", exc)
+                return
 
         self.ha_config_sent.add(alias_id)
 
@@ -123,15 +138,40 @@ class DataLogger:
         return None, None
 
     def log_pvoutput(self, json_data):
-        date_time = datetime.now().strftime("d=%Y%m%d&t=%H:%M")
-        data = f"{date_time}&v1={json_data['power_generation_today']}&v2={json_data['pv_power']}&v3={json_data['power_consumption_today']}&v4={json_data['load_power']}&v5={json_data['controller_temperature']}&v6={json_data['battery_voltage']}"
-        response = requests.post(
-            PVOUTPUT_URL,
-            data=data,
-            headers={
-            "Content-Type": "application/x-www-form-urlencoded",
-            "X-Pvoutput-Apikey": self.config['pvoutput']['api_key'],
-            "X-Pvoutput-SystemId":  self.config['pvoutput']['system_id']
-        },
+        required = (
+            'power_generation_today',
+            'pv_power',
+            'power_consumption_today',
+            'load_power',
+            'controller_temperature',
+            'battery_voltage',
         )
-        logging.info(f"pvoutput {response}")
+        if not all(field in json_data for field in required):
+            missing = [field for field in required if field not in json_data]
+            logging.error("pvoutput logging skipped; missing fields: %s", ", ".join(missing))
+            return
+
+        date_time = datetime.now().strftime("d=%Y%m%d&t=%H:%M")
+        data = (
+            f"{date_time}&v1={json_data['power_generation_today']}"
+            f"&v2={json_data['pv_power']}"
+            f"&v3={json_data['power_consumption_today']}"
+            f"&v4={json_data['load_power']}"
+            f"&v5={json_data['controller_temperature']}"
+            f"&v6={json_data['battery_voltage']}"
+        )
+        try:
+            response = requests.post(
+                PVOUTPUT_URL,
+                data=data,
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "X-Pvoutput-Apikey": self.config['pvoutput']['api_key'],
+                    "X-Pvoutput-SystemId":  self.config['pvoutput']['system_id']
+                },
+                timeout=15,
+            )
+            response.raise_for_status()
+            logging.info("pvoutput %s", response.status_code)
+        except requests.RequestException as exc:
+            logging.error("pvoutput logging failed: %s", exc)

@@ -1,6 +1,5 @@
-import asyncio
 import logging
-from .BaseClient import BaseClient
+from .BaseClient import BaseClient, CREATE_TASK
 from .Utils import bytes_to_int, parse_temperature
 
 # Read and parse BT-1/BT-2 type bluetooth modules connected to Renogy Rover/Wanderer/Adventurer
@@ -42,7 +41,7 @@ class RoverClient(BaseClient):
         self.sections = [
             {'register': 12, 'words': 8, 'parser': self.parse_device_info},
             {'register': 26, 'words': 1, 'parser': self.parse_device_address},
-            {'register': 256, 'words': 34, 'parser': self.parse_chargin_info},
+            {'register': 256, 'words': 34, 'parser': self.parse_charging_info},
             {'register': 57348, 'words': 1, 'parser': self.parse_battery_type}
         ]
         self.set_load_params = {'function': 6, 'register': 266}
@@ -52,7 +51,7 @@ class RoverClient(BaseClient):
         if operation == 6: # write operation
             self.parse_set_load_response(response)
             self.on_write_operation_complete()
-            self.data = {}
+            self.reset_device_data()
         else:
             # read is handled in base class
             await super().on_data_received(response)
@@ -63,9 +62,15 @@ class RoverClient(BaseClient):
             self.on_data_callback(self, self.data)
 
     def set_load(self, value = 0):
-        logging.info("setting load {}".format(value))
+        if value not in (0, 1):
+            raise ValueError("Load value must be 0 (off) or 1 (on)")
+        if not self.ble_manager or not self.loop:
+            raise RuntimeError("Client must be started before setting load")
+        if self.loop.is_closed() or not self.loop.is_running():
+            raise RuntimeError("Client event loop is not running")
+        logging.info("setting load %s", value)
         request = self.create_generic_read_request(self.device_id, self.set_load_params["function"], self.set_load_params["register"], value)
-        asyncio.create_task(self.ble_manager.characteristic_write_value(request))
+        self.loop.call_soon_threadsafe(lambda: CREATE_TASK(self.ble_manager.characteristic_write_value(request)))
 
     def parse_device_info(self, bs):
         data = {}
@@ -78,7 +83,7 @@ class RoverClient(BaseClient):
         data['device_id'] = bytes_to_int(bs, 4, 1)
         self.data.update(data)
 
-    def parse_chargin_info(self, bs):
+    def parse_charging_info(self, bs):
         data = {}
         temp_unit = self.config['data']['temperature_unit']
         data['function'] = FUNCTION.get(bytes_to_int(bs, 1, 1))

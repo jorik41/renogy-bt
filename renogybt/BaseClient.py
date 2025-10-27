@@ -2,6 +2,8 @@ import asyncio
 import configparser
 import logging
 import traceback
+from typing import Callable, Iterable, List, Optional
+
 from .BLEManager import BLEManager
 from .Utils import bytes_to_int, crc16_modbus, int_to_bytes
 
@@ -16,35 +18,78 @@ WRITE_CHAR_UUID  = "0000ffd1-0000-1000-8000-00805f9b34fb"
 READ_TIMEOUT = 15 # (seconds)
 READ_SUCCESS = 3
 READ_ERROR = 131
+CREATE_TASK = getattr(asyncio, "create_task", asyncio.ensure_future)
 
 class BaseClient:
     def __init__(self, config):
         self.config: configparser.ConfigParser = config
-        self.ble_manager = None
+        self.ble_manager: Optional[BLEManager] = None
         self.device = None
         self.poll_timer = None
         self.read_timeout = None
-        self.data = {}
-        device_id_str = self.config['device'].get('device_id')
-        self.device_ids = [int(x.strip()) for x in device_id_str.split(',') if x.strip()]
+        self.loop: Optional[asyncio.AbstractEventLoop] = None
+        self.future: Optional[asyncio.Future] = None
+
+        device_id_str = (self.config['device'].get('device_id') or "").strip()
+        if not device_id_str:
+            raise ValueError("Config option 'device_id' must contain at least one id")
+        try:
+            self.device_ids: List[int] = [int(x.strip()) for x in device_id_str.split(',') if x.strip()]
+        except ValueError as exc:
+            raise ValueError(f"Invalid device_id list '{device_id_str}'") from exc
+        if not self.device_ids:
+            raise ValueError("No valid device ids were found in configuration")
+
         self.device_index = 0
         self.device_id = self.device_ids[self.device_index]
         self.sections = []
         self.section_index = 0
-        self.loop = None
-        logging.info(f"Init {self.__class__.__name__}: {self.config['device']['alias']} => {self.config['device']['mac_addr']}")
+        self.reset_device_data()
+        logging.info(
+            "Init %s: %s => %s",
+            self.__class__.__name__,
+            self.config['device']['alias'],
+            self.config['device']['mac_addr'],
+        )
 
     def start(self):
         try:
-            self.loop = asyncio.get_event_loop()
-            self.loop.create_task(self.connect())
+            if self.loop and self.loop.is_running():
+                raise RuntimeError("Event loop already running")
+            self.loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self.loop)
             self.future = self.loop.create_future()
+            self.loop.create_task(self.connect())
             self.loop.run_until_complete(self.future)
         except Exception as e:
             self.__on_error(e)
         except KeyboardInterrupt:
-            self.loop = None
             self.__on_error("KeyboardInterrupt")
+        finally:
+            if self.loop:
+                try:
+                    all_tasks_fn: Callable[[Optional[asyncio.AbstractEventLoop]], Iterable[asyncio.Task]]
+                    all_tasks_fn = getattr(asyncio, "all_tasks", None)  # type: ignore[assignment]
+                    if all_tasks_fn is None:
+                        all_tasks_fn = asyncio.Task.all_tasks  # type: ignore[attr-defined]
+
+                    pending = [
+                        task for task in all_tasks_fn(self.loop)
+                        if task is not self.future and not task.done()
+                    ]
+                    for task in pending:
+                        task.cancel()
+                    if pending:
+                        self.loop.run_until_complete(
+                            asyncio.gather(*pending, return_exceptions=True)
+                        )
+                except Exception:
+                    pass
+                finally:
+                    self.loop.close()
+                    asyncio.set_event_loop(None)
+                    self.loop = None
+                    self.future = None
 
     async def connect(self):
         self.ble_manager = BLEManager(
@@ -70,8 +115,11 @@ class BaseClient:
             if self.ble_manager.client and self.ble_manager.client.is_connected: await self.read_section()
 
     async def disconnect(self):
-        await self.ble_manager.disconnect()
-        self.future.set_result('DONE')
+        if self.ble_manager:
+            await self.ble_manager.disconnect()
+            self.ble_manager = None
+        if self.future and not self.future.done():
+            self.future.set_result('DONE')
 
     async def on_data_received(self, response):
         if self.read_timeout and not self.read_timeout.cancelled(): self.read_timeout.cancel()
@@ -91,7 +139,6 @@ class BaseClient:
             if self.section_index >= len(self.sections) - 1: # last section, read complete
                 self.section_index = 0
                 self.on_read_operation_complete()
-                self.data = {}
                 if self.device_index >= len(self.device_ids) - 1:
                     self.device_index = 0
                     self.device_id = self.device_ids[self.device_index]
@@ -113,6 +160,7 @@ class BaseClient:
         self.data['__device'] = self.config['device']['alias']
         self.data['__client'] = self.__class__.__name__
         self.__safe_callback(self.on_data_callback, self.data)
+        self.reset_device_data()
 
     def on_read_timeout(self):
         logging.error("on_read_timeout => Timed out! Please check your device_id!")
@@ -150,7 +198,7 @@ class BaseClient:
         return data
 
     def __on_error(self, error = None):
-        logging.error(f"Exception occured: {error}")
+        logging.error(f"Exception occurred: {error}")
         self.__safe_callback(self.on_error_callback, error)
         self.stop()
 
@@ -159,15 +207,18 @@ class BaseClient:
         self.__safe_callback(self.on_error_callback, error)
         self.stop()
 
+    def reset_device_data(self):
+        self.data = {}
+
     def stop(self):
-        if self.read_timeout and not self.read_timeout.cancelled(): self.read_timeout.cancel()
-        if self.loop is None:
-            self.loop = asyncio.get_event_loop()
-            self.loop.create_task(self.disconnect())
-            self.future = self.loop.create_future()
-            self.loop.run_until_complete(self.future)
+        if self.read_timeout and not self.read_timeout.cancelled(): 
+            self.read_timeout.cancel()
+        if not self.loop or self.loop.is_closed():
+            return
+        if self.loop.is_running():
+            self.loop.call_soon_threadsafe(lambda: CREATE_TASK(self.disconnect()))
         else:
-            self.loop.create_task(self.disconnect())
+            self.loop.run_until_complete(self.disconnect())
 
     def __safe_callback(self, calback, param):
         if calback is not None:

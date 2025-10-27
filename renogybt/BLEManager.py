@@ -1,8 +1,10 @@
 import asyncio
+import inspect
 import logging
-import sys
-from bleak import BleakClient, BleakScanner, BLEDevice
+from bleak import BLEDevice, BleakClient, BleakScanner
 from bleak.exc import BleakError
+
+CREATE_TASK = getattr(asyncio, "create_task", asyncio.ensure_future)
 
 DISCOVERY_TIMEOUT = 5  # max wait time to complete the bluetooth scanning (seconds)
 DISCOVER_RETRIES = 3   # number of times to retry discovery on failure
@@ -40,7 +42,7 @@ class BLEManager:
                 if attempt < DISCOVER_RETRIES:
                     await asyncio.sleep(DISCOVER_DELAY)
                 else:
-                    self.connect_fail_callback(sys.exc_info())
+                    self.connect_fail_callback(exc)
                     return
 
         for dev in self.discovered_devices:
@@ -87,20 +89,30 @@ class BLEManager:
                 if attempt < CONNECT_RETRIES:
                     await asyncio.sleep(DISCOVER_DELAY)
                 else:
-                    self.connect_fail_callback(sys.exc_info())
+                    self.connect_fail_callback(exc)
 
-    async def notification_callback(self, _, data: bytearray):
+    def notification_callback(self, _, data: bytearray):
         logging.info("notification_callback")
-        await self.data_callback(data)
+        try:
+            result = self.data_callback(data)
+            if inspect.isawaitable(result):
+                CREATE_TASK(result)
+        except Exception as exc:
+            logging.error("Notification callback failed: %s", exc)
 
     async def characteristic_write_value(self, data):
+        if not self.client or not self.client.is_connected:
+            raise BleakError("Client is not connected")
+        if self.write_char_handle is None:
+            raise BleakError("Write characteristic handle is not available")
         try:
             logging.info(f'writing to {self.write_char_uuid} {data}')
             await self.client.write_gatt_char(self.write_char_handle, bytearray(data), response=False)
             logging.info('characteristic_write_value succeeded')
             await asyncio.sleep(0.5)
         except Exception as e:
-            logging.info(f'characteristic_write_value failed {e}')
+            logging.error('characteristic_write_value failed %s', e)
+            raise
 
     async def disconnect(self):
         if self.client and self.client.is_connected:

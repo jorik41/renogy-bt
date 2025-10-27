@@ -63,7 +63,9 @@ class InverterClient(BaseClient):
 
     def parse_load_info(self, bs):
         data = {}
-        data['load_curent'] = bytes_to_int(bs, 3, 2, scale=0.1)
+        load_current = bytes_to_int(bs, 3, 2, scale=0.1)
+        data['load_current'] = load_current
+        data['load_curent'] = load_current  # backwards compatibility (typo retained)
         data['load_active_power'] = bytes_to_int(bs, 5, 2)
         data['load_apparent_power'] = bytes_to_int(bs, 7, 2)
         data['line_charging_current'] = bytes_to_int(bs, 11, 2, scale=0.1)
