@@ -10,6 +10,10 @@ standard ESPHome Bluetooth Proxy node.
 Enable the proxy in `config.ini`:
 
 ```ini
+[data]
+enable_polling = true
+poll_interval = 10          # soften BLE usage so Wi-Fi has breathing room
+
 [home_assistant_proxy]
 enabled = true
 bind_host = 0.0.0.0        # where the ESPHome API listens
@@ -29,6 +33,7 @@ battery_retry_seconds = 30
 | `blocked_addresses` | Prevent Home Assistant from taking over peripherals that this project must own (e.g. Renogy battery MAC). |
 | `max_connections` | How many simultaneous remote GATT sessions Home Assistant may open through the proxy. |
 | `battery_retry_seconds` | Background retry interval for the Renogy polling client. The proxy keeps running even when the battery cannot be discovered; the Renogy client will retry on this cadence. |
+| `[data] poll_interval` | Poll every 10 s instead of hammering the BLE link; this reduces airtime and keeps Wi-Fi stable on shared antennas. |
 
 The `[device]` section should continue to point to your Renogy hardware so the
 local poller can be launched in the background.
@@ -47,6 +52,8 @@ INFO:renogybt.home_assistant_proxy:ESPHome proxy listening on ('0.0.0.0', 6053)
 INFO:renogybt.home_assistant_proxy:mDNS service renogy-bt-proxy._esphomelib._tcp.local. registered
 ```
 
+The scanner now runs in passive mode with duplicate filtering so advertisements
+use less airtime on busy 2.4 GHz links.
 At that point Home Assistant can add the device using the ESPHome integration.
 If the Renogy BLE client cannot find the battery, it will log the failure and
 retry after `battery_retry_seconds` without stopping the proxy.

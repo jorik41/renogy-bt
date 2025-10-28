@@ -34,8 +34,9 @@ Key options:
 - `blocked_addresses` prevents Home Assistant from taking over critical peripherals (for example the Renogy battery itself).
 - `max_connections` controls how many concurrent remote GATT connections Home Assistant may open through the proxy.
 - `battery_retry_seconds` keeps the Renogy polling loop retrying in the background without affecting the Home Assistant side.
+- `[data] poll_interval = 10` trades a slightly slower Renogy refresh for less 2.4 GHz airtime on shared Wi-Fi/BLE radios.
 
-The proxy advertises itself over mDNS as `_esphomelib._tcp.local` and supports advertisement streaming, remote GATT operations, and connection monitoring so Home Assistant treats it like an official ESPHome Bluetooth proxy.
+The proxy advertises itself over mDNS as `_esphomelib._tcp.local` and supports advertisement streaming, remote GATT operations, and connection monitoring so Home Assistant treats it like an official ESPHome Bluetooth proxy. Scanning runs in passive mode with duplicate filtering to minimise Bluetooth airtime.
 
 **How to get mac address?**
 

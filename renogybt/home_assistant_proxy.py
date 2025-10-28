@@ -665,8 +665,17 @@ class ESPHomeProxyServer:
         return resp
 
     async def _start_scanner(self) -> None:
-        self._scanner = BleakScanner(adapter=self._adapter)
-        self._scanner.register_detection_callback(self._on_advertisement)
+        scanner_kwargs = {
+            "scanning_mode": "passive",
+            "bluez": {"filter_duplicates": True},
+        }
+        if self._adapter:
+            scanner_kwargs["adapter"] = self._adapter
+
+        self._scanner = BleakScanner(
+            detection_callback=self._on_advertisement,
+            **scanner_kwargs,
+        )
         try:
             await self._scanner.start()
             self._scanner_state = BluetoothScannerState.BLUETOOTH_SCANNER_STATE_RUNNING
