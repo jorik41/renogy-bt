@@ -27,9 +27,6 @@ import aiohttp
 from bleak import BLEDevice, AdvertisementData, BleakScanner
 
 
-CREATE_TASK = getattr(asyncio, "create_task", asyncio.ensure_future)
-
-
 @dataclass
 class AdvertisementPacket:
     """Representation of a BLE advertisement.
