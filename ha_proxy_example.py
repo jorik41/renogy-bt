@@ -13,7 +13,6 @@ from renogybt import (
     BatteryClient,
     DataLogger,
     DCChargerClient,
-    HomeAssistantAPIClient,
     HomeAssistantBluetoothProxy,
     InverterClient,
     RoverClient,
@@ -101,29 +100,41 @@ async def run_proxy(config_path: Path) -> None:
     adapter = config["home_assistant_proxy"].get(
         "adapter", fallback=config["device"].get("adapter")
     )
-    proxy_source = config["home_assistant_proxy"].get(
-        "source", fallback=config["device"].get("alias", "renogybt-proxy")
+    proxy_name = config["home_assistant_proxy"].get(
+        "name", fallback=config["device"].get("alias", "renogybt-proxy")
+    )
+    friendly_name = config["home_assistant_proxy"].get(
+        "friendly_name", fallback=proxy_name
     )
     data_logger = DataLogger(config)
 
     def factory():
         return _create_client(config, data_logger)
 
-    api_client = HomeAssistantAPIClient(
-        host=config["home_assistant_proxy"].get("host", "homeassistant.local"),
-        port=config["home_assistant_proxy"].getint("port", fallback=8123),
-        token=config["home_assistant_proxy"].get("access_token"),
-        ssl=config["home_assistant_proxy"].getboolean("ssl", fallback=False),
-        endpoint=config["home_assistant_proxy"].get(
-            "endpoint", fallback="/api/bluetooth/adv"
-        ),
-    )
+    blocked_addrs = {
+        addr.strip()
+        for addr in config["home_assistant_proxy"]
+        .get("blocked_addresses", fallback="")
+        .split(",")
+        if addr.strip()
+    }
 
     proxy = HomeAssistantBluetoothProxy(
-        api_client=api_client,
-        source=proxy_source,
+        name=proxy_name,
+        friendly_name=friendly_name,
+        bind_host=config["home_assistant_proxy"].get("bind_host", fallback="0.0.0.0"),
+        port=config["home_assistant_proxy"].getint("port", fallback=6053),
         adapter=adapter,
         battery_client_factory=factory,
+        blocked_addresses=blocked_addrs,
+        project_name=config["home_assistant_proxy"].get("project_name"),
+        project_version=config["home_assistant_proxy"].get("project_version"),
+        manufacturer=config["home_assistant_proxy"].get("manufacturer"),
+        model=config["home_assistant_proxy"].get("model"),
+        suggested_area=config["home_assistant_proxy"].get("suggested_area"),
+        max_connections=config["home_assistant_proxy"].getint(
+            "max_connections", fallback=3
+        ),
     )
 
     try:
