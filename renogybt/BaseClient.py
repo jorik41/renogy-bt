@@ -4,7 +4,12 @@ import logging
 import traceback
 from typing import Callable, Iterable, List, Optional
 
-from .BLEManager import BLEManager
+from .BLEManager import (
+    BLEManager,
+    DISCOVER_DELAY,
+    DISCOVER_RETRIES,
+    DISCOVERY_TIMEOUT,
+)
 from .Utils import bytes_to_int, crc16_modbus, int_to_bytes
 
 # Base class that works with all Renogy family devices
@@ -45,6 +50,15 @@ class BaseClient:
         self.sections = []
         self.section_index = 0
         self.reset_device_data()
+        self.discovery_timeout = self.config['device'].getint(
+            'discovery_timeout', fallback=DISCOVERY_TIMEOUT
+        )
+        self.discovery_retries = self.config['device'].getint(
+            'discovery_retries', fallback=DISCOVER_RETRIES
+        )
+        self.discovery_delay = self.config['device'].getint(
+            'discovery_delay', fallback=DISCOVER_DELAY
+        )
         logging.info(
             "Init %s: %s => %s",
             self.__class__.__name__,
@@ -101,6 +115,9 @@ class BaseClient:
             write_char_uuid=WRITE_CHAR_UUID,
             write_service_uuid=WRITE_SERVICE_UUID,
             adapter=self.config['device'].get('adapter'),
+            discovery_timeout=self.discovery_timeout,
+            discover_retries=self.discovery_retries,
+            discover_delay=self.discovery_delay,
         )
         await self.ble_manager.discover()
 

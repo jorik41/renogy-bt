@@ -12,7 +12,21 @@ DISCOVER_DELAY = 5     # wait time between retries (seconds)
 CONNECT_RETRIES = 3    # number of times to retry connecting
 
 class BLEManager:
-    def __init__(self, mac_address, alias, on_data, on_connect_fail, write_service_uuid, notify_char_uuid, write_char_uuid, adapter=None):
+    def __init__(
+        self,
+        mac_address,
+        alias,
+        on_data,
+        on_connect_fail,
+        write_service_uuid,
+        notify_char_uuid,
+        write_char_uuid,
+        adapter=None,
+        *,
+        discovery_timeout=DISCOVERY_TIMEOUT,
+        discover_retries=DISCOVER_RETRIES,
+        discover_delay=DISCOVER_DELAY,
+    ):
         self.mac_address = mac_address
         self.device_alias = alias
         self.data_callback = on_data
@@ -25,25 +39,41 @@ class BLEManager:
         self.client: BleakClient = None
         self.discovered_devices = []
         self.adapter = adapter
+        self._discovery_timeout = discovery_timeout
+        self._discover_retries = max(1, discover_retries)
+        self._discover_delay = max(0, discover_delay)
 
     async def discover(self):
         mac_address = self.mac_address.upper()
-        for attempt in range(1, DISCOVER_RETRIES + 1):
+        for attempt in range(1, self._discover_retries + 1):
             try:
                 logging.info("Starting discovery (attempt %s)...", attempt)
                 self.discovered_devices = await BleakScanner.discover(
-                    timeout=DISCOVERY_TIMEOUT,
+                    timeout=self._discovery_timeout,
                     adapter=self.adapter,
                 )
                 logging.info("Devices found: %s", len(self.discovered_devices))
-                break
+                for dev in self.discovered_devices:
+                    logging.debug(
+                        "Discovered device: %s (%s)",
+                        getattr(dev, "address", "unknown"),
+                        getattr(dev, "name", ""),
+                    )
+                if self.discovered_devices:
+                    break
+                logging.warning(
+                    "No BLE devices discovered (attempt %s/%s); retrying after %ss",
+                    attempt,
+                    self._discover_retries,
+                    self._discover_delay,
+                )
             except BleakError as exc:
                 logging.error("Discovery failed: %s", exc)
-                if attempt < DISCOVER_RETRIES:
-                    await asyncio.sleep(DISCOVER_DELAY)
-                else:
-                    self.connect_fail_callback(exc)
-                    return
+            if attempt < self._discover_retries:
+                await asyncio.sleep(self._discover_delay)
+            else:
+                self.connect_fail_callback(Exception("Discovery exhausted without finding target"))
+                return
 
         for dev in self.discovered_devices:
             if dev.address is not None and (
@@ -87,7 +117,7 @@ class BLEManager:
             except Exception as exc:
                 logging.error("Error connecting to device: %s", exc)
                 if attempt < CONNECT_RETRIES:
-                    await asyncio.sleep(DISCOVER_DELAY)
+                    await asyncio.sleep(self._discover_delay)
                 else:
                     self.connect_fail_callback(exc)
 
