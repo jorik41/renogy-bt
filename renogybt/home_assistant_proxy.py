@@ -23,7 +23,9 @@ import logging
 import socket
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, Optional, Set
+from typing import Dict, Iterable, Optional, Set, Type
+
+from types import TracebackType
 
 from bleak import AdvertisementData, BLEDevice, BleakClient, BleakScanner
 from bleak.exc import BleakError
@@ -78,8 +80,6 @@ from aioesphomeapi.api_pb2 import (
 from aioesphomeapi.core import MESSAGE_TYPE_TO_PROTO, to_human_readable_address
 from aioesphomeapi.model import BluetoothProxyFeature, BluetoothProxySubscriptionFlag
 
-CREATE_TASK = getattr(asyncio, "create_task", asyncio.ensure_future)
-
 LOGGER = logging.getLogger(__name__)
 
 MDNS_SERVICE_TYPE = "_esphomelib._tcp.local."
@@ -88,6 +88,8 @@ DEFAULT_API_VERSION_MINOR = 13
 
 PROTO_CLASS_TO_ID = {cls: msg_type for msg_type, cls in MESSAGE_TYPE_TO_PROTO.items()}
 
+ADVERTISEMENT_QUEUE_MAXSIZE = 256
+ADVERTISEMENT_DROP_LOG_INTERVAL = 100
 
 # ---------------------------------------------------------------------------
 # Utility helpers
@@ -533,6 +535,12 @@ class ESPHomeProxyServer:
         self._battery_task: Optional[asyncio.Task] = None
         self._battery_stop_event: Optional[asyncio.Event] = None
         self._active_battery_client = None
+        self._advertisement_queue: Optional[
+            asyncio.Queue[Optional[BluetoothLEAdvertisementResponse]]
+        ] = None
+        self._advertisement_worker: Optional[asyncio.Task] = None
+        self._advertisement_queue_drops = 0
+        self._advertisement_queue_maxsize = ADVERTISEMENT_QUEUE_MAXSIZE
 
         self.device_info_response = _derive_device_info_response(
             name=name,
@@ -580,6 +588,7 @@ class ESPHomeProxyServer:
             self._stop_event.set()
 
     async def _start_dependencies(self) -> None:
+        await self._start_advertisement_pipeline()
         await self._start_battery_client()
         await self._start_scanner()
         await self._start_server()
@@ -588,6 +597,7 @@ class ESPHomeProxyServer:
     async def _stop_dependencies(self) -> None:
         await self._stop_server()
         await self._stop_scanner()
+        await self._stop_advertisement_pipeline()
         await self._stop_all_peripherals()
         await self._stop_battery_client()
         await self._stop_zeroconf()
@@ -611,14 +621,109 @@ class ESPHomeProxyServer:
     async def remove_advertisement_subscriber(self, client: ProxyClient) -> None:
         self._advertisement_subscribers.discard(client)
 
-    def _on_advertisement(self, device: BLEDevice, advertisement: AdvertisementData) -> None:
-        if not self._advertisement_subscribers:
+    async def _start_advertisement_pipeline(self) -> None:
+        if self._advertisement_queue:
             return
+        self._advertisement_queue = asyncio.Queue(self._advertisement_queue_maxsize)
+        self._advertisement_queue_drops = 0
+        self._advertisement_worker = asyncio.create_task(
+            self._advertisement_dispatcher()
+        )
+
+    async def _stop_advertisement_pipeline(self) -> None:
+        queue = self._advertisement_queue
+        worker = self._advertisement_worker
+        self._advertisement_worker = None
+        if queue is None:
+            return
+
+        if worker:
+            while True:
+                try:
+                    queue.put_nowait(None)
+                    break
+                except asyncio.QueueFull:
+                    try:
+                        queue.get_nowait()
+                        queue.task_done()
+                    except asyncio.QueueEmpty:
+                        break
+            await worker
+
+        while not queue.empty():
+            try:
+                queue.get_nowait()
+                queue.task_done()
+            except asyncio.QueueEmpty:
+                break
+
+        if self._advertisement_queue_drops:
+            LOGGER.warning(
+                "Advertisement queue dropped %s packets while Home Assistant was slow",
+                self._advertisement_queue_drops,
+            )
+        self._advertisement_queue = None
+        self._advertisement_queue_drops = 0
+
+    async def _advertisement_dispatcher(self) -> None:
+        assert self._advertisement_queue is not None
+        queue = self._advertisement_queue
+        while True:
+            packet = await queue.get()
+            if packet is None:
+                queue.task_done()
+                break
+
+            subscribers = list(self._advertisement_subscribers)
+            if subscribers:
+                for client in subscribers:
+                    try:
+                        await client.send_advertisement(packet)
+                    except Exception as exc:  # pragma: no cover - defensive logging
+                        LOGGER.debug(
+                            "Failed forwarding advertisement to client: %s", exc
+                        )
+            queue.task_done()
+
+    def _on_advertisement(self, device: BLEDevice, advertisement: AdvertisementData) -> None:
+        if not self._advertisement_subscribers or not self._advertisement_queue:
+            return
+
         message = self._build_advertisement_message(device, advertisement)
         if message is None:
             return
-        for client in list(self._advertisement_subscribers):
-            CREATE_TASK(client.send_advertisement(message))
+
+        queue = self._advertisement_queue
+        if queue.full():
+            try:
+                queue.get_nowait()
+                queue.task_done()
+            except asyncio.QueueEmpty:
+                pass
+            self._advertisement_queue_drops += 1
+            if (
+                self._advertisement_queue_drops
+                % ADVERTISEMENT_DROP_LOG_INTERVAL
+                == 0
+            ):
+                LOGGER.warning(
+                    "Advertisement queue saturated; total dropped packets: %s",
+                    self._advertisement_queue_drops,
+                )
+
+        try:
+            queue.put_nowait(message)
+        except asyncio.QueueFull:
+            self._advertisement_queue_drops += 1
+            if (
+                self._advertisement_queue_drops
+                % ADVERTISEMENT_DROP_LOG_INTERVAL
+                == 0
+            ):
+                LOGGER.warning(
+                    "Advertisement queue saturated; total dropped packets: %s",
+                    self._advertisement_queue_drops,
+                )
 
     def _build_advertisement_message(
         self,
@@ -911,7 +1016,7 @@ class ESPHomeProxyServer:
                 await connection.enable_notifications(
                     request.handle,
                     client,
-                    lambda data: CREATE_TASK(
+                    lambda data: asyncio.create_task(
                         client.send(
                             BluetoothGATTNotifyDataResponse(
                                 address=request.address,
@@ -936,7 +1041,7 @@ class ESPHomeProxyServer:
         address = _normalise_mac(to_human_readable_address(address_int))
         if address not in self._peripherals:
             LOGGER.warning("Client requested operation on unknown peripheral %s", address)
-            CREATE_TASK(
+            asyncio.create_task(
                 client.send(
                     BluetoothDeviceConnectionResponse(
                         address=address_int,
@@ -960,7 +1065,7 @@ class ESPHomeProxyServer:
     async def _broadcast_connections_free(self) -> None:
         message = self.connections_free_response()
         for client in list(self._clients):
-            CREATE_TASK(client.send_connections_free(message))
+            asyncio.create_task(client.send_connections_free(message))
 
     def connections_free_response(self) -> BluetoothConnectionsFreeResponse:
         in_use = len(self._peripherals)
@@ -998,7 +1103,7 @@ class ESPHomeProxyServer:
             return
 
         self._battery_stop_event = asyncio.Event()
-        self._battery_task = CREATE_TASK(self._run_battery_supervisor())
+        self._battery_task = asyncio.create_task(self._run_battery_supervisor())
         LOGGER.info("Battery client supervisor started")
 
     async def _run_battery_supervisor(self) -> None:
