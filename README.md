@@ -27,6 +27,8 @@ Enable `[home_assistant_proxy]` in `config.ini` to expose an ESPHome-native Blue
 python3 ./ha_proxy_example.py config.ini
 ```
 
+See `docs/home_assistant_proxy.md` for a full walkthrough.
+
 Key options:
 - `name`/`friendly_name` customise how the proxy appears inside Home Assistant.
 - `blocked_addresses` prevents Home Assistant from taking over critical peripherals (for example the Renogy battery itself).
