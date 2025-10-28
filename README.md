@@ -31,6 +31,7 @@ Key options:
 - `name`/`friendly_name` customise how the proxy appears inside Home Assistant.
 - `blocked_addresses` prevents Home Assistant from taking over critical peripherals (for example the Renogy battery itself).
 - `max_connections` controls how many concurrent remote GATT connections Home Assistant may open through the proxy.
+- `battery_retry_seconds` keeps the Renogy polling loop retrying in the background without affecting the Home Assistant side.
 
 The proxy advertises itself over mDNS as `_esphomelib._tcp.local` and supports advertisement streaming, remote GATT operations, and connection monitoring so Home Assistant treats it like an official ESPHome Bluetooth proxy.
 

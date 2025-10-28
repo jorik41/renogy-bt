@@ -508,6 +508,7 @@ class ESPHomeProxyServer:
         model: Optional[str],
         suggested_area: Optional[str],
         max_connections: int,
+        battery_retry_seconds: int,
     ):
         self.name = name
         self._friendly_name = friendly_name
@@ -522,12 +523,16 @@ class ESPHomeProxyServer:
         self._model = model
         self._suggested_area = suggested_area
         self._max_connections = max_connections
+        self._battery_retry_seconds = max(5, battery_retry_seconds)
 
         self._clients: Set[ProxyClient] = set()
         self._advertisement_subscribers: Set[ProxyClient] = set()
         self._peripherals: Dict[str, PeripheralConnection] = {}
         self._connections_free_lock = asyncio.Lock()
         self._connections_free_message = BluetoothConnectionsFreeResponse()
+        self._battery_task: Optional[asyncio.Task] = None
+        self._battery_stop_event: Optional[asyncio.Event] = None
+        self._active_battery_client = None
 
         self.device_info_response = _derive_device_info_response(
             name=name,
@@ -545,8 +550,6 @@ class ESPHomeProxyServer:
 
         self._server: Optional[asyncio.AbstractServer] = None
         self._scanner: Optional[BleakScanner] = None
-        self._battery_client = None
-        self._battery_future: Optional[asyncio.Future] = None
         self._zeroconf: Optional[AsyncZeroconf] = None
         self._zeroconf_info: Optional[ServiceInfo] = None
         self._stop_event: Optional[asyncio.Event] = None
@@ -971,30 +974,72 @@ class ESPHomeProxyServer:
     # --------------------- renogy battery client ---------------------------
 
     async def _start_battery_client(self) -> None:
-        if not self._battery_client_factory:
+        if not self._battery_client_factory or self._battery_task:
             return
 
-        loop = asyncio.get_running_loop()
-        self._battery_client = self._battery_client_factory()
+        self._battery_stop_event = asyncio.Event()
+        self._battery_task = CREATE_TASK(self._run_battery_supervisor())
+        LOGGER.info("Battery client supervisor started")
 
-        def run_client() -> None:
+    async def _run_battery_supervisor(self) -> None:
+        assert self._battery_client_factory
+        retry_delay = self._battery_retry_seconds
+        loop = asyncio.get_running_loop()
+
+        while True:
+            if self._battery_stop_event and self._battery_stop_event.is_set():
+                break
+
             try:
-                self._battery_client.start()
+                client = self._battery_client_factory()
+            except Exception as exc:  # pragma: no cover - factory errors
+                LOGGER.error("Failed to create battery client: %s", exc)
+                await asyncio.sleep(retry_delay)
+                continue
+
+            self._active_battery_client = client
+            LOGGER.info("Battery client thread starting")
+
+            try:
+                await loop.run_in_executor(None, client.start)
             except Exception as exc:  # pragma: no cover - hardware runtime
                 LOGGER.error("Battery client exited unexpectedly: %s", exc)
+            finally:
+                with contextlib.suppress(Exception):
+                    client.stop()
+                self._active_battery_client = None
 
-        self._battery_future = loop.run_in_executor(None, run_client)
-        LOGGER.info("Battery client started in background executor")
+            if self._battery_stop_event and self._battery_stop_event.is_set():
+                break
+
+            LOGGER.info(
+                "Battery client stopped; retrying in %s seconds", retry_delay
+            )
+            await asyncio.sleep(retry_delay)
+
+        LOGGER.info("Battery client supervisor stopped")
 
     async def _stop_battery_client(self) -> None:
-        if not self._battery_client:
+        if not self._battery_task:
             return
-        with contextlib.suppress(Exception):  # pragma: no cover - best effort
-            self._battery_client.stop()
-        if self._battery_future:
-            await asyncio.wrap_future(self._battery_future)
-        self._battery_client = None
-        self._battery_future = None
+
+        if self._battery_stop_event and not self._battery_stop_event.is_set():
+            self._battery_stop_event.set()
+
+        if self._active_battery_client:
+            with contextlib.suppress(Exception):  # pragma: no cover - best effort
+                self._active_battery_client.stop()
+
+        task = self._battery_task
+        self._battery_task = None
+        self._active_battery_client = None
+
+        try:
+            await task
+        except Exception as exc:  # pragma: no cover - supervisor errors
+            LOGGER.debug("Battery supervisor finished with error: %s", exc)
+
+        self._battery_stop_event = None
 
     # --------------------- zeroconf advertisement --------------------------
 
@@ -1084,6 +1129,7 @@ class HomeAssistantBluetoothProxy:
         model: Optional[str],
         suggested_area: Optional[str],
         max_connections: int = 3,
+        battery_retry_seconds: int = 30,
     ):
         self._server = ESPHomeProxyServer(
             name=name,
@@ -1099,6 +1145,7 @@ class HomeAssistantBluetoothProxy:
             model=model,
             suggested_area=suggested_area,
             max_connections=max_connections,
+            battery_retry_seconds=battery_retry_seconds,
         )
 
     async def start(self) -> None:

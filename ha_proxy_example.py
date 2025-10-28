@@ -118,6 +118,9 @@ async def run_proxy(config_path: Path) -> None:
         .split(",")
         if addr.strip()
     }
+    battery_retry_seconds = config["home_assistant_proxy"].getint(
+        "battery_retry_seconds", fallback=30
+    )
 
     proxy = HomeAssistantBluetoothProxy(
         name=proxy_name,
@@ -135,6 +138,7 @@ async def run_proxy(config_path: Path) -> None:
         max_connections=config["home_assistant_proxy"].getint(
             "max_connections", fallback=3
         ),
+        battery_retry_seconds=battery_retry_seconds,
     )
 
     try:
