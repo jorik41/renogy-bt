@@ -2,3 +2,4 @@ bleak
 configparser
 requests
 paho-mqtt
+aiohttp

@@ -19,6 +19,16 @@ python3 ./example.py config.ini
 
 The library now retries bluetooth discovery and connection automatically if the adapter is not ready right away. This is helpful on systems that take a moment to power on their bluetooth interface after a reboot.
 
+### Home Assistant bluetooth proxy (experimental)
+
+To emulate the ESPHome bluetooth proxy on hardware such as a Raspberry Pi Zero, enable the `[home_assistant_proxy]` section in `config.ini` and provide the details of your Home Assistant instance. The new `ha_proxy_example.py` entrypoint will keep the Renogy BLE session alive while also forwarding nearby advertisements to Home Assistant:
+
+```sh
+python3 ./ha_proxy_example.py config.ini
+```
+
+The proxy will reuse the configured bluetooth adapter (defaults to `hci0`) and can send data to any HTTP endpoint that accepts the Home Assistant bluetooth remote API shape.
+
 **How to get mac address?**
 
 The library will automatically list possible compatible devices discovered nearby, just run `example.py`. You can alternatively use apps like [BLE Scanner](https://play.google.com/store/apps/details?id=com.macdom.ble.blescanner).
