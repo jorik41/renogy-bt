@@ -28,6 +28,8 @@ python3 ./ha_proxy_example.py config.ini
 ```
 
 See `docs/home_assistant_proxy.md` for a full walkthrough.
+For unattended operation and automatic restarts after boot, follow the
+systemd setup notes in `docs/systemd.md`.
 
 Key options:
 - `name`/`friendly_name` customise how the proxy appears inside Home Assistant.
