@@ -52,8 +52,9 @@ INFO:renogybt.home_assistant_proxy:ESPHome proxy listening on ('0.0.0.0', 6053)
 INFO:renogybt.home_assistant_proxy:mDNS service renogy-bt-proxy._esphomelib._tcp.local. registered
 ```
 
-The scanner now runs in passive mode with duplicate filtering so advertisements
-use less airtime on busy 2.4 GHz links.
+The scanner tries to run in passive mode with duplicate filtering so advertisements
+use less airtime on busy 2.4 GHz links. If the Bluetooth stack cannot support
+passive scanning, the proxy automatically falls back to active mode.
 At that point Home Assistant can add the device using the ESPHome integration.
 If the Renogy BLE client cannot find the battery, it will log the failure and
 retry after `battery_retry_seconds` without stopping the proxy.

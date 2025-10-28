@@ -672,10 +672,21 @@ class ESPHomeProxyServer:
         if self._adapter:
             scanner_kwargs["adapter"] = self._adapter
 
-        self._scanner = BleakScanner(
-            detection_callback=self._on_advertisement,
-            **scanner_kwargs,
-        )
+        try:
+            self._scanner = BleakScanner(
+                detection_callback=self._on_advertisement,
+                **scanner_kwargs,
+            )
+        except BleakError as exc:
+            LOGGER.warning(
+                "Passive scanning not available (%s); falling back to active mode",
+                exc,
+            )
+            scanner_kwargs["scanning_mode"] = "active"
+            self._scanner = BleakScanner(
+                detection_callback=self._on_advertisement,
+                **scanner_kwargs,
+            )
         try:
             await self._scanner.start()
             self._scanner_state = BluetoothScannerState.BLUETOOTH_SCANNER_STATE_RUNNING
