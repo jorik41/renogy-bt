@@ -19,12 +19,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Dict, List, Optional
 
 import aiohttp
 from bleak import BLEDevice, AdvertisementData, BleakScanner
+
+# CREATE_TASK provides compatibility for different Python/asyncio versions
+CREATE_TASK = getattr(asyncio, "create_task", asyncio.ensure_future)
+
+# Pattern to identify Bluetooth adapter devices (e.g., "hci0 (C8:8A:D8:41:0B:4F)")
+# These should not be forwarded to Home Assistant as they represent the local adapter
+ADAPTER_NAME_PATTERN = re.compile(r'^hci\d+\s+\([0-9A-Fa-f:]+\)$')
 
 
 @dataclass
@@ -253,6 +261,15 @@ class HomeAssistantBluetoothProxy:
     def _on_advertisement(self, device: BLEDevice, advertisement: AdvertisementData) -> None:
         if not self._running:
             return
+        
+        # Skip forwarding advertisements from local Bluetooth adapters
+        # Adapters typically have names like "hci0 (MAC_ADDRESS)"
+        if device.name and ADAPTER_NAME_PATTERN.match(device.name):
+            logging.debug(
+                "Skipping adapter device: %s (%s)", device.name, device.address
+            )
+            return
+        
         packet = AdvertisementPacket.from_bleak(device, advertisement, self._source)
         CREATE_TASK(self._forward_packet(packet))
 
