@@ -46,12 +46,11 @@ python3 ./ha_proxy_example.py config.ini
 
 The proxy will reuse the configured bluetooth adapter (defaults to `hci0`) and can send data to any HTTP endpoint that accepts the Home Assistant bluetooth remote API shape.
 
-**Home Assistant token setup**
+**Home Assistant proxy tips**
 
-1. In Home Assistant, create a long-lived access token from your user profile.
-2. Save the token to `~/.config/renogy-bt/homeassistant.token` (or update `access_token_file` in `config.ini` to point to your chosen location).
-3. Ensure the `endpoint` is set to `/api/bluetooth/remote/adv`, which matches the Home Assistant Bluetooth remote API.
-4. Restart the `renogy-bt` service so the proxy picks up the token.
+- By default the proxy posts to `/api/bluetooth/adv`, with fallbacks for newer `/api/bluetooth/remote/adv` builds and the ESPHome-style `/ble/advertisements` port. Adjust `endpoint`/`fallback_endpoints` in `config.ini` if you run a custom setup.
+- A long-lived token is optional. Leave `access_token` blank to run on a trusted network, or drop a token into `~/.config/renogy-bt/homeassistant.token` (and un-comment `access_token_file`) if your Home Assistant requires authentication.
+- Restart the `renogy-bt` service after changing proxy settings so the new configuration is applied.
 
 **How to get mac address?**
 

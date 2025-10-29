@@ -138,14 +138,33 @@ async def run_proxy(config_path: Path) -> None:
     def factory():
         return _create_client(config, data_logger)
 
+    endpoint = config["home_assistant_proxy"].get(
+        "endpoint", fallback="/api/bluetooth/adv"
+    )
+    fallback_raw = config["home_assistant_proxy"].get(
+        "fallback_endpoints", fallback=""
+    )
+    if fallback_raw:
+        fallback_endpoints = [
+            item.strip() for item in fallback_raw.split(",") if item.strip()
+        ]
+    else:
+        fallback_endpoints = [
+            ep
+            for ep in (
+                "/api/bluetooth/remote/adv",
+                "/ble/advertisements",
+            )
+            if ep != endpoint
+        ]
+
     api_client = HomeAssistantAPIClient(
         host=config["home_assistant_proxy"].get("host", "homeassistant.local"),
         port=config["home_assistant_proxy"].getint("port", fallback=8123),
         token=_resolve_token(config, config_path),
         ssl=config["home_assistant_proxy"].getboolean("ssl", fallback=False),
-        endpoint=config["home_assistant_proxy"].get(
-            "endpoint", fallback="/api/bluetooth/remote/adv"
-        ),
+        endpoint=endpoint,
+        fallback_endpoints=fallback_endpoints,
     )
 
     proxy = HomeAssistantBluetoothProxy(

@@ -22,7 +22,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
-from typing import Awaitable, Callable, Dict, List, Optional
+from typing import Awaitable, Callable, Dict, List, Optional, Sequence
 
 import aiohttp
 from bleak import BLEDevice, AdvertisementData, BleakScanner
@@ -108,6 +108,7 @@ class HomeAssistantAPIClient:
         token: Optional[str],
         ssl: bool = False,
         endpoint: str = "/api/bluetooth/adv",
+        fallback_endpoints: Optional[Sequence[str]] = None,
         session_factory: Optional[
             Callable[[], Awaitable[aiohttp.ClientSession]]
         ] = None,
@@ -116,7 +117,17 @@ class HomeAssistantAPIClient:
         self._port = port
         self._token = token
         self._ssl = ssl
-        self._endpoint = endpoint
+        endpoints: List[str] = []
+        if endpoint:
+            endpoints.append(endpoint)
+        if fallback_endpoints:
+            for candidate in fallback_endpoints:
+                if candidate and candidate not in endpoints:
+                    endpoints.append(candidate)
+        if not endpoints:
+            endpoints.append("/api/bluetooth/adv")
+        self._endpoints = endpoints
+        self._endpoint_failures: Dict[str, int] = {}
         self._session_factory = session_factory
         self._session: Optional[aiohttp.ClientSession] = None
 
@@ -150,18 +161,51 @@ class HomeAssistantAPIClient:
         if self._token:
             headers["Authorization"] = f"Bearer {self._token}"
 
-        url = f"{self.base_url}{self._endpoint}"
-        try:
-            async with self._session.post(url, json=packet.as_payload(), headers=headers) as resp:
-                if resp.status >= 400:
+        payload = packet.as_payload()
+        for index, endpoint in enumerate(self._endpoints):
+            url = f"{self.base_url}{endpoint}"
+            try:
+                async with self._session.post(
+                    url,
+                    json=payload,
+                    headers=headers,
+                ) as resp:
+                    if resp.status < 400:
+                        if endpoint in self._endpoint_failures:
+                            self._endpoint_failures.pop(endpoint, None)
+                        return
                     body = await resp.text()
+                    should_try_fallback = (
+                        resp.status in {404, 405, 410}
+                        and index < len(self._endpoints) - 1
+                    )
+                    if should_try_fallback:
+                        attempts = self._endpoint_failures.get(endpoint, 0)
+                        if attempts == 0:
+                            logging.info(
+                                "Endpoint %s responded with %s, trying fallback %s",
+                                endpoint,
+                                resp.status,
+                                self._endpoints[index + 1],
+                            )
+                        self._endpoint_failures[endpoint] = attempts + 1
+                        continue
                     logging.warning(
-                        "Failed to forward advertisement: status=%s body=%s",
+                        "Failed to forward advertisement via %s: status=%s body=%s",
+                        endpoint,
                         resp.status,
                         body,
                     )
-        except aiohttp.ClientError as exc:
-            logging.error("Error sending advertisement to Home Assistant: %s", exc)
+            except aiohttp.ClientError as exc:
+                if index < len(self._endpoints) - 1:
+                    logging.info(
+                        "Error sending advertisement via %s (%s), trying fallback %s",
+                        endpoint,
+                        exc,
+                        self._endpoints[index + 1],
+                    )
+                    continue
+                logging.error("Error sending advertisement to Home Assistant: %s", exc)
 
 
 class HomeAssistantBluetoothProxy:
