@@ -145,12 +145,19 @@ def main(argv: Optional[List[str]] = None) -> None:
     args = parser.parse_args(argv)
     config_path = Path(args.config).resolve()
     if not config_path.exists():
-        raise SystemExit(f"Config file not found: {config_path}")
+        logging.error("Config file not found: %s", config_path)
+        raise SystemExit(1)
 
     try:
         asyncio.run(run_proxy(config_path))
     except KeyboardInterrupt:
         logging.info("Proxy interrupted by user")
+    except RuntimeError as e:
+        logging.error("Configuration error: %s", e)
+        raise SystemExit(1)
+    except Exception as e:
+        logging.error("Unexpected error: %s", e, exc_info=True)
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
