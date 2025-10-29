@@ -97,9 +97,11 @@ class BaseClient:
                             task.cancel()
                         # Use wait_for with timeout to avoid indefinite waiting
                         try:
-                            asyncio.wait_for(
-                                asyncio.gather(*pending, return_exceptions=True),
-                                timeout=5.0
+                            self.loop.run_until_complete(
+                                asyncio.wait_for(
+                                    asyncio.gather(*pending, return_exceptions=True),
+                                    timeout=5.0
+                                )
                             )
                         except asyncio.TimeoutError:
                             logging.warning("Timeout waiting for tasks to complete during cleanup")

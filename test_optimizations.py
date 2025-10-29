@@ -3,6 +3,7 @@
 
 import sys
 import time
+import tempfile
 import tracemalloc
 from pathlib import Path
 from renogybt import DataLogger, Utils
@@ -13,7 +14,8 @@ def test_energy_totals_caching():
     print("Testing energy totals caching...")
     
     # Create a temporary test file
-    test_file = "/tmp/test_energy.json"
+    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json') as f:
+        test_file = f.name
     
     # Simulate multiple updates
     data = {'voltage': 12.5, 'current': 2.0}
@@ -199,7 +201,10 @@ def test_memory_usage():
     
     # Create logger and simulate typical usage
     logger = DataLogger(config)
-    test_file = "/tmp/test_energy_mem.json"
+    
+    # Create a temporary test file
+    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json') as f:
+        test_file = f.name
     
     # Simulate 1000 data points
     for i in range(1000):
