@@ -55,6 +55,7 @@ class DataLogger:
         # Circuit breakers for different services
         self._remote_breaker = CircuitBreaker(failure_threshold=5, timeout=120)
         self._pvoutput_breaker = CircuitBreaker(failure_threshold=3, timeout=300)
+        self._mqtt_breaker = CircuitBreaker(failure_threshold=5, timeout=60)
         # Rate limiting for MQTT publishes
         self._last_mqtt_publish = {}  # track last publish time per topic
         self._mqtt_min_interval = 1.0  # minimum 1 second between publishes to same topic
@@ -143,10 +144,15 @@ class DataLogger:
         return self._mqtt_client
 
     def log_mqtt(self, json_data):
+        if not self._mqtt_breaker.can_attempt():
+            logging.debug("MQTT circuit breaker is open, skipping")
+            return
+        
         logging.debug("mqtt logging")
         client = self._get_mqtt_client()
         if client is None:
             logging.error("MQTT client not available")
+            self._mqtt_breaker.record_failure()
             return
 
         alias = self.config['device']['alias']
@@ -164,19 +170,26 @@ class DataLogger:
             return
         
         try:
-            # Reconnect if disconnected
-            if not self._mqtt_connected:
-                client.reconnect()
-                # Give it a moment to reconnect
-                time.sleep(0.5)
+            # Reconnect only if actually disconnected (check is_connected to avoid race condition)
+            if not self._mqtt_connected and not client.is_connected():
+                try:
+                    client.reconnect()
+                    # Give it a moment to reconnect
+                    time.sleep(0.5)
+                except ValueError:
+                    # Already connected - race condition where callback set flag after our check
+                    logging.debug("MQTT reconnect skipped - already connected")
             
             result = client.publish(topic, json.dumps(json_data), qos=0)
             if result.rc != mqtt.MQTT_ERR_SUCCESS:
                 logging.error("mqtt publish failed with code %s", result.rc)
+                self._mqtt_breaker.record_failure()
             else:
                 self._last_mqtt_publish[topic] = now
+                self._mqtt_breaker.record_success()
         except Exception as exc:
             logging.error("mqtt publish failed: %s", exc)
+            self._mqtt_breaker.record_failure()
             # Reset client on error to force reconnect
             self._cleanup_mqtt()
             return
