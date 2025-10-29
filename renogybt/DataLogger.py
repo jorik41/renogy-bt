@@ -2,10 +2,45 @@ import json
 import logging
 import paho.mqtt.client as mqtt
 import requests
+import time
 from configparser import ConfigParser
 from datetime import datetime
 
 PVOUTPUT_URL = 'http://pvoutput.org/service/r2/addstatus.jsp'
+
+class CircuitBreaker:
+    """Simple circuit breaker to prevent repeated failed requests."""
+    def __init__(self, failure_threshold=3, timeout=60):
+        self.failure_threshold = failure_threshold
+        self.timeout = timeout
+        self.failure_count = 0
+        self.last_failure_time = 0
+        self.is_open = False
+    
+    def record_success(self):
+        """Reset circuit breaker on success."""
+        self.failure_count = 0
+        self.is_open = False
+    
+    def record_failure(self):
+        """Record a failure and open circuit if threshold reached."""
+        self.failure_count += 1
+        self.last_failure_time = time.time()
+        if self.failure_count >= self.failure_threshold:
+            self.is_open = True
+            logging.warning("Circuit breaker opened after %s failures", self.failure_count)
+    
+    def can_attempt(self):
+        """Check if request can be attempted."""
+        if not self.is_open:
+            return True
+        # Check if timeout has passed to try again
+        if time.time() - self.last_failure_time > self.timeout:
+            logging.info("Circuit breaker half-open, attempting request")
+            self.is_open = False
+            self.failure_count = 0
+            return True
+        return False
 
 class DataLogger:
     def __init__(self, config: ConfigParser):
@@ -17,6 +52,9 @@ class DataLogger:
         # Reuse MQTT client connection
         self._mqtt_client = None
         self._mqtt_connected = False
+        # Circuit breakers for different services
+        self._remote_breaker = CircuitBreaker(failure_threshold=5, timeout=120)
+        self._pvoutput_breaker = CircuitBreaker(failure_threshold=3, timeout=300)
 
     def _get_http_session(self):
         """Get or create a persistent HTTP session."""
@@ -33,6 +71,10 @@ class DataLogger:
         return self._http_session
 
     def log_remote(self, json_data):
+        if not self._remote_breaker.can_attempt():
+            logging.debug("Remote logging circuit breaker is open, skipping")
+            return
+        
         headers = { "Authorization" : f"Bearer {self.config['remote_logging']['auth_header']}" }
         try:
             session = self._get_http_session()
@@ -43,15 +85,18 @@ class DataLogger:
                 headers=headers,
             )
             if req.status_code == 200:
-                logging.info("Log remote 200")
+                logging.debug("Log remote 200")
+                self._remote_breaker.record_success()
             else:
                 logging.error(
                     "Log remote error %s: %s",
                     req.status_code,
                     req.text[:200],
                 )
+                self._remote_breaker.record_failure()
         except requests.RequestException as exc:
             logging.error(f"Log remote failed: {exc}")
+            self._remote_breaker.record_failure()
 
     def _get_mqtt_client(self):
         """Get or create a persistent MQTT client connection."""
@@ -199,6 +244,10 @@ class DataLogger:
         return None, None
 
     def log_pvoutput(self, json_data):
+        if not self._pvoutput_breaker.can_attempt():
+            logging.debug("PVOutput circuit breaker is open, skipping")
+            return
+        
         required = (
             'power_generation_today',
             'pv_power',
@@ -235,8 +284,10 @@ class DataLogger:
             )
             response.raise_for_status()
             logging.info("pvoutput %s", response.status_code)
+            self._pvoutput_breaker.record_success()
         except requests.RequestException as exc:
             logging.error("pvoutput logging failed: %s", exc)
+            self._pvoutput_breaker.record_failure()
 
     def _cleanup_mqtt(self):
         """Clean up MQTT client connection."""

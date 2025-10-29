@@ -131,7 +131,7 @@ class BLEManager:
                     self.connect_fail_callback(exc)
 
     def notification_callback(self, _, data: bytearray):
-        logging.info("notification_callback")
+        logging.debug("notification_callback")
         try:
             result = self.data_callback(data)
             if inspect.isawaitable(result):
@@ -145,10 +145,17 @@ class BLEManager:
         if self.write_char_handle is None:
             raise BleakError("Write characteristic handle is not available")
         try:
-            logging.debug(f'writing to {self.write_char_uuid} {data}')
-            await self.client.write_gatt_char(self.write_char_handle, bytearray(data), response=False)
+            logging.debug(f'writing to {self.write_char_uuid}')
+            # Add timeout to prevent hanging
+            await asyncio.wait_for(
+                self.client.write_gatt_char(self.write_char_handle, bytearray(data), response=False),
+                timeout=10.0
+            )
             logging.debug('characteristic_write_value succeeded')
             await asyncio.sleep(0.5)
+        except asyncio.TimeoutError:
+            logging.error('characteristic_write_value timed out')
+            raise BleakError("Write operation timed out")
         except Exception as e:
             logging.error('characteristic_write_value failed %s', e)
             raise

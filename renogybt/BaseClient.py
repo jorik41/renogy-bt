@@ -199,9 +199,26 @@ class BaseClient:
         if self.device_id == None or len(self.sections) == 0:
             return logging.error("BaseClient cannot be used directly")
 
+        # Check if still connected before reading
+        if not self.ble_manager or not self.ble_manager.client or not self.ble_manager.client.is_connected:
+            logging.warning("BLE connection lost, attempting to reconnect")
+            try:
+                await self.connect()
+            except Exception as exc:
+                logging.error("Failed to reconnect: %s", exc)
+                self.stop()
+                return
+
         self.read_timeout = self.loop.call_later(READ_TIMEOUT, self.on_read_timeout)
         request = self.create_generic_read_request(self.device_id, 3, self.sections[index]['register'], self.sections[index]['words']) 
-        await self.ble_manager.characteristic_write_value(request)
+        try:
+            await self.ble_manager.characteristic_write_value(request)
+        except Exception as exc:
+            logging.error("Failed to write characteristic: %s", exc)
+            if self.read_timeout and not self.read_timeout.cancelled():
+                self.read_timeout.cancel()
+            # Try to recover by stopping and letting the system retry
+            self.stop()
 
     def create_generic_read_request(self, device_id, function, regAddr, readWrd):                             
         data = None                                
