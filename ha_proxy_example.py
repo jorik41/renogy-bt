@@ -6,20 +6,33 @@ import argparse
 import asyncio
 import configparser
 import logging
+import sys
 from pathlib import Path
 from typing import List, Optional
 
-from renogybt import (
-    BatteryClient,
-    DataLogger,
-    DCChargerClient,
-    HomeAssistantAPIClient,
-    HomeAssistantBluetoothProxy,
-    InverterClient,
-    RoverClient,
-    RoverHistoryClient,
-    Utils,
-)
+try:
+    from renogybt import (
+        BatteryClient,
+        DataLogger,
+        DCChargerClient,
+        HomeAssistantAPIClient,
+        HomeAssistantBluetoothProxy,
+        InverterClient,
+        RoverClient,
+        RoverHistoryClient,
+        Utils,
+    )
+except ModuleNotFoundError as exc:
+    missing = exc.name
+    if missing in {"bleak", "requests", "aiohttp", "paho"}:
+        sys.stderr.write(
+            f"Missing Python dependency '{missing}'. Install the requirements first:\n"
+            "  python3 -m pip install -r requirements.txt\n"
+            "Alternatively, run the proxy with the bundled virtualenv:\n"
+            "  ./venv/bin/python ha_proxy_example.py config.ini\n"
+        )
+        raise SystemExit(1)
+    raise
 
 
 logging.basicConfig(level=logging.INFO)

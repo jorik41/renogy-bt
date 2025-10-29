@@ -1,10 +1,29 @@
 import configparser
 import logging
-import os
 import sys
 from pathlib import Path
 
-from renogybt import DCChargerClient, InverterClient, RoverClient, RoverHistoryClient, BatteryClient, DataLogger, Utils
+try:
+    from renogybt import (
+        DCChargerClient,
+        InverterClient,
+        RoverClient,
+        RoverHistoryClient,
+        BatteryClient,
+        DataLogger,
+        Utils,
+    )
+except ModuleNotFoundError as exc:
+    missing = exc.name
+    if missing in {"bleak", "requests", "aiohttp", "paho"}:
+        sys.stderr.write(
+            f"Missing Python dependency '{missing}'. Install the requirements first:\n"
+            "  python3 -m pip install -r requirements.txt\n"
+            "Alternatively, run the script with the bundled virtualenv:\n"
+            "  ./venv/bin/python example.py config.ini\n"
+        )
+        sys.exit(1)
+    raise
 
 logging.basicConfig(level=logging.INFO)
 

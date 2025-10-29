@@ -11,7 +11,14 @@ python3 -m pip install -r requirements.txt
 This library should work on any modern Linux/Windows/Mac platforms that supports [Bleak](https://github.com/hbldh/bleak). 
 
 ## Example
-Each device needs a separate [config.ini](https://github.com/cyrils/renogy-bt1/blob/main/config.ini) file. Update the config with the correct values for `mac_addr`, `alias` and `type`.  If your system has multiple bluetooth interfaces you can specify which one to use via the optional `adapter` setting (for example `hci0`). Then run the following command:
+Each device needs a separate [config.ini](https://github.com/cyrils/renogy-bt1/blob/main/config.ini) file. Update the config with the correct values for `mac_addr`, `alias` and `type`.  If your system has multiple bluetooth interfaces you can specify which one to use via the optional `adapter` setting (for example `hci0`). Once configured, install the dependencies and run the example:
+
+Install the dependencies once per environment:
+```sh
+python3 -m pip install -r requirements.txt
+```
+
+If you prefer to use the bundled virtual environment, activate it via `source venv/bin/activate` or run the scripts with `./venv/bin/python`.
 
 ```sh
 python3 ./example.py config.ini
