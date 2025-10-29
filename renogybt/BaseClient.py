@@ -91,12 +91,20 @@ class BaseClient:
                         task for task in all_tasks_fn(self.loop)
                         if task is not self.future and not task.done()
                     ]
-                    for task in pending:
-                        task.cancel()
+                    # Only cancel and wait for a limited number of tasks to avoid hanging
                     if pending:
-                        self.loop.run_until_complete(
-                            asyncio.gather(*pending, return_exceptions=True)
-                        )
+                        for task in pending:
+                            task.cancel()
+                        # Use wait_for with timeout to avoid indefinite waiting
+                        try:
+                            self.loop.run_until_complete(
+                                asyncio.wait_for(
+                                    asyncio.gather(*pending, return_exceptions=True),
+                                    timeout=5.0
+                                )
+                            )
+                        except asyncio.TimeoutError:
+                            logging.warning("Timeout waiting for tasks to complete during cleanup")
                 except Exception:
                     pass
                 finally:
@@ -104,6 +112,12 @@ class BaseClient:
                     asyncio.set_event_loop(None)
                     self.loop = None
                     self.future = None
+                    # Cleanup data logger if present
+                    if hasattr(self, 'data_logger'):
+                        try:
+                            self.data_logger.cleanup()
+                        except Exception:
+                            pass
 
     async def connect(self):
         self.ble_manager = BLEManager(
@@ -148,10 +162,10 @@ class BaseClient:
                 self.sections[self.section_index]['parser'] != None and
                 self.sections[self.section_index]['words'] * 2 + 5 == len(response)):
                 # call the parser and update data
-                logging.info(f"on_data_received: read operation success")
+                logging.debug(f"on_data_received: read operation success")
                 self.__safe_parser(self.sections[self.section_index]['parser'], response)
             else:
-                logging.info(f"on_data_received: read operation failed: {response.hex()}")
+                logging.debug(f"on_data_received: read operation failed: {response.hex()}")
 
             if self.section_index >= len(self.sections) - 1: # last section, read complete
                 self.section_index = 0
@@ -173,7 +187,7 @@ class BaseClient:
             logging.warning("on_data_received: unknown operation={}".format(operation))
 
     def on_read_operation_complete(self):
-        logging.info("on_read_operation_complete")
+        logging.debug("on_read_operation_complete")
         self.data['__device'] = self.config['device']['alias']
         self.data['__client'] = self.__class__.__name__
         self.__safe_callback(self.on_data_callback, self.data)
@@ -193,9 +207,26 @@ class BaseClient:
         if self.device_id == None or len(self.sections) == 0:
             return logging.error("BaseClient cannot be used directly")
 
+        # Check if still connected before reading
+        if not self.ble_manager or not self.ble_manager.client or not self.ble_manager.client.is_connected:
+            logging.warning("BLE connection lost, attempting to reconnect")
+            try:
+                await self.connect()
+            except Exception as exc:
+                logging.error("Failed to reconnect: %s", exc)
+                self.stop()
+                return
+
         self.read_timeout = self.loop.call_later(READ_TIMEOUT, self.on_read_timeout)
         request = self.create_generic_read_request(self.device_id, 3, self.sections[index]['register'], self.sections[index]['words']) 
-        await self.ble_manager.characteristic_write_value(request)
+        try:
+            await self.ble_manager.characteristic_write_value(request)
+        except Exception as exc:
+            logging.error("Failed to write characteristic: %s", exc)
+            if self.read_timeout and not self.read_timeout.cancelled():
+                self.read_timeout.cancel()
+            # Try to recover by stopping and letting the system retry
+            self.stop()
 
     def create_generic_read_request(self, device_id, function, regAddr, readWrd):                             
         data = None                                

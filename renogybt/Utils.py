@@ -4,6 +4,11 @@ import json
 import os
 import time
 
+# Cache for energy totals to reduce disk I/O
+_energy_totals_cache = {}
+_energy_totals_last_write = 0
+_ENERGY_WRITE_INTERVAL = 60  # Write to disk every 60 seconds max
+
 # Reads data from a list of bytes, and converts to an int
 def bytes_to_int(bs, offset, length, signed=False, scale=1):
     if length == 0:
@@ -70,7 +75,11 @@ def update_energy_totals(data, interval_sec=None, file_path='energy_totals.json'
     multiple devices can be tracked independently. The function also injects the
     updated totals back into ``data``. The time between calls is calculated
     using timestamps to ensure accurate energy accumulation.
+    
+    Uses in-memory cache to reduce disk I/O.
     """
+    global _energy_totals_cache, _energy_totals_last_write
+    
     if 'voltage' not in data or 'current' not in data:
         return
     try:
@@ -80,18 +89,22 @@ def update_energy_totals(data, interval_sec=None, file_path='energy_totals.json'
         return
 
     alias_key = alias or 'default'
-    try:
-        with open(file_path, 'r') as fp:
-            totals_map = json.load(fp)
-    except (OSError, json.JSONDecodeError):
-        totals_map = {}
+    
+    # Load from cache or disk on first access
+    if not _energy_totals_cache:
+        try:
+            with open(file_path, 'r') as fp:
+                _energy_totals_cache = json.load(fp)
+        except (OSError, json.JSONDecodeError):
+            _energy_totals_cache = {}
 
     now = time.time()
-    totals = totals_map.get(alias_key, {
+    totals = _energy_totals_cache.get(alias_key, {
         'energy_in_kwh': 0,
         'energy_out_kwh': 0,
         'timestamp': now
     })
+    # Migrate old format
     if 'energy_in_wh' in totals:
         totals['energy_in_kwh'] = totals.pop('energy_in_wh') / 1000
     if 'energy_out_wh' in totals:
@@ -113,17 +126,33 @@ def update_energy_totals(data, interval_sec=None, file_path='energy_totals.json'
         totals['energy_out_kwh'] = round(totals.get('energy_out_kwh', 0) + abs(delta_kwh), 3)
 
     totals['timestamp'] = now
-    totals_map[alias_key] = totals
+    _energy_totals_cache[alias_key] = totals
+    
+    # Write to disk periodically (not on every update to reduce I/O)
+    if now - _energy_totals_last_write >= _ENERGY_WRITE_INTERVAL:
+        _write_energy_totals_to_disk(file_path)
+        _energy_totals_last_write = now
+
+    data.update({k: totals[k] for k in ('energy_in_kwh', 'energy_out_kwh')})
+
+def _write_energy_totals_to_disk(file_path):
+    """Write cached energy totals to disk."""
+    if not _energy_totals_cache:
+        return
     directory = os.path.dirname(file_path)
     if directory:
         os.makedirs(directory, exist_ok=True)
     try:
         with open(file_path, 'w') as fp:
-            json.dump(totals_map, fp)
+            json.dump(_energy_totals_cache, fp)
     except OSError:
         pass
 
-    data.update({k: totals[k] for k in ('energy_in_kwh', 'energy_out_kwh')})
+def flush_energy_totals(file_path='energy_totals.json'):
+    """Force write energy totals to disk. Call on shutdown."""
+    global _energy_totals_last_write
+    _write_energy_totals_to_disk(file_path)
+    _energy_totals_last_write = time.time()
 
 def combine_battery_readings(data_map):
     """Combine up to eight battery readings into a single dictionary.
