@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
 import socket
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -79,6 +80,13 @@ from aioesphomeapi.api_pb2 import (
 )
 from aioesphomeapi.core import MESSAGE_TYPE_TO_PROTO, to_human_readable_address
 from aioesphomeapi.model import BluetoothProxyFeature, BluetoothProxySubscriptionFlag
+
+# CREATE_TASK provides compatibility for different Python/asyncio versions
+CREATE_TASK = getattr(asyncio, "create_task", asyncio.ensure_future)
+
+# Pattern to identify Bluetooth adapter devices (e.g., "hci0 (C8:8A:D8:41:0B:4F)")
+# These should not be forwarded to Home Assistant as they represent the local adapter
+ADAPTER_NAME_PATTERN = re.compile(r'^hci\d+\s+\([0-9A-Fa-f:]+\)$')
 
 LOGGER = logging.getLogger(__name__)
 
@@ -687,6 +695,14 @@ class ESPHomeProxyServer:
 
     def _on_advertisement(self, device: BLEDevice, advertisement: AdvertisementData) -> None:
         if not self._advertisement_subscribers or not self._advertisement_queue:
+            return
+        
+        # Skip forwarding advertisements from local Bluetooth adapters
+        # Adapters typically have names like "hci0 (MAC_ADDRESS)"
+        if device.name and ADAPTER_NAME_PATTERN.match(device.name):
+            LOGGER.debug(
+                "Skipping adapter device: %s (%s)", device.name, device.address
+            )
             return
 
         message = self._build_advertisement_message(device, advertisement)
