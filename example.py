@@ -2,6 +2,7 @@ import configparser
 import logging
 import os
 import sys
+import atexit
 from pathlib import Path
 
 from renogybt import DCChargerClient, InverterClient, RoverClient, RoverHistoryClient, BatteryClient, DataLogger, Utils
@@ -18,6 +19,13 @@ config = configparser.ConfigParser(inline_comment_prefixes=('#'))
 config.read(str(config_path))
 data_logger: DataLogger = DataLogger(config)
 energy_file = str((config_path.parent / 'energy_totals.json').resolve())
+
+# Cleanup on exit
+def cleanup():
+    data_logger.cleanup()
+    Utils.flush_energy_totals(energy_file)
+
+atexit.register(cleanup)
 
 # store battery data when reading multiple batteries
 battery_map = {}

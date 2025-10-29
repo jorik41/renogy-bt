@@ -1,6 +1,6 @@
 import json
 import logging
-import paho.mqtt.publish as publish
+import paho.mqtt.client as mqtt
 import requests
 from configparser import ConfigParser
 from datetime import datetime
@@ -12,11 +12,31 @@ class DataLogger:
         self.config = config
         # keep track of which devices have had HA discovery config published
         self.ha_config_sent = set()
+        # Reuse HTTP session for better performance
+        self._http_session = None
+        # Reuse MQTT client connection
+        self._mqtt_client = None
+        self._mqtt_connected = False
+
+    def _get_http_session(self):
+        """Get or create a persistent HTTP session."""
+        if self._http_session is None:
+            self._http_session = requests.Session()
+            # Set keep-alive and connection pooling
+            adapter = requests.adapters.HTTPAdapter(
+                pool_connections=1,
+                pool_maxsize=2,
+                max_retries=0
+            )
+            self._http_session.mount('http://', adapter)
+            self._http_session.mount('https://', adapter)
+        return self._http_session
 
     def log_remote(self, json_data):
         headers = { "Authorization" : f"Bearer {self.config['remote_logging']['auth_header']}" }
         try:
-            req = requests.post(
+            session = self._get_http_session()
+            req = session.post(
                 self.config['remote_logging']['url'],
                 json=json_data,
                 timeout=15,
@@ -33,11 +53,53 @@ class DataLogger:
         except requests.RequestException as exc:
             logging.error(f"Log remote failed: {exc}")
 
+    def _get_mqtt_client(self):
+        """Get or create a persistent MQTT client connection."""
+        if self._mqtt_client is None:
+            user = self.config['mqtt']['user']
+            password = self.config['mqtt']['password']
+            
+            self._mqtt_client = mqtt.Client(client_id="renogy-bt", clean_session=False)
+            if user and password:
+                self._mqtt_client.username_pw_set(user, password)
+            
+            # Set callbacks for connection management
+            def on_connect(client, userdata, flags, rc):
+                if rc == 0:
+                    self._mqtt_connected = True
+                    logging.debug("MQTT connected successfully")
+                else:
+                    self._mqtt_connected = False
+                    logging.error("MQTT connection failed with code %s", rc)
+            
+            def on_disconnect(client, userdata, rc):
+                self._mqtt_connected = False
+                if rc != 0:
+                    logging.warning("MQTT disconnected unexpectedly")
+            
+            self._mqtt_client.on_connect = on_connect
+            self._mqtt_client.on_disconnect = on_disconnect
+            
+            try:
+                self._mqtt_client.connect(
+                    self.config['mqtt']['server'],
+                    self.config['mqtt'].getint('port'),
+                    60  # keepalive
+                )
+                self._mqtt_client.loop_start()
+            except Exception as exc:
+                logging.error("Failed to connect MQTT client: %s", exc)
+                self._mqtt_client = None
+                return None
+        
+        return self._mqtt_client
+
     def log_mqtt(self, json_data):
-        logging.info("mqtt logging")
-        user = self.config['mqtt']['user']
-        password = self.config['mqtt']['password']
-        auth = None if not user or not password else {"username": user, "password": password}
+        logging.debug("mqtt logging")
+        client = self._get_mqtt_client()
+        if client is None:
+            logging.error("MQTT client not available")
+            return
 
         alias = self.config['device']['alias']
         device_id = json_data.get('device_id')
@@ -47,22 +109,26 @@ class DataLogger:
         topic = f"{topic_base.rstrip('/')}/{alias_id}"
 
         try:
-            publish.single(
-                topic,
-                payload=json.dumps(json_data),
-                hostname=self.config['mqtt']['server'],
-                port=self.config['mqtt'].getint('port'),
-                auth=auth,
-                client_id="renogy-bt",
-            )
-        except Exception as exc:  # paho raises generic Exception
+            # Reconnect if disconnected
+            if not self._mqtt_connected:
+                client.reconnect()
+                # Give it a moment to reconnect
+                import time
+                time.sleep(0.5)
+            
+            result = client.publish(topic, json.dumps(json_data), qos=0)
+            if result.rc != mqtt.MQTT_ERR_SUCCESS:
+                logging.error("mqtt publish failed with code %s", result.rc)
+        except Exception as exc:
             logging.error("mqtt publish failed: %s", exc)
+            # Reset client on error to force reconnect
+            self._cleanup_mqtt()
             return
 
         if self.config['mqtt'].getboolean('homeassistant_discovery', fallback=False):
-            self.publish_home_assistant_config(auth, json_data, alias_id, topic)
+            self.publish_home_assistant_config(client, json_data, alias_id, topic)
 
-    def publish_home_assistant_config(self, auth, json_data, alias_id, state_topic):
+    def publish_home_assistant_config(self, client, json_data, alias_id, state_topic):
         if alias_id in self.ha_config_sent:
             return
 
@@ -98,15 +164,10 @@ class DataLogger:
                     payload["state_class"] = "measurement"
 
             try:
-                publish.single(
-                    config_topic,
-                    payload=json.dumps(payload),
-                    hostname=self.config['mqtt']['server'],
-                    port=self.config['mqtt'].getint('port'),
-                    auth=auth,
-                    client_id="renogy-bt",
-                    retain=True,
-                )
+                result = client.publish(config_topic, json.dumps(payload), qos=0, retain=True)
+                if result.rc != mqtt.MQTT_ERR_SUCCESS:
+                    logging.error("Home Assistant discovery publish failed with code %s", result.rc)
+                    return
             except Exception as exc:
                 logging.error("Home Assistant discovery publish failed: %s", exc)
                 return
@@ -161,7 +222,8 @@ class DataLogger:
             f"&v6={json_data['battery_voltage']}"
         )
         try:
-            response = requests.post(
+            session = self._get_http_session()
+            response = session.post(
                 PVOUTPUT_URL,
                 data=data,
                 headers={
@@ -175,3 +237,24 @@ class DataLogger:
             logging.info("pvoutput %s", response.status_code)
         except requests.RequestException as exc:
             logging.error("pvoutput logging failed: %s", exc)
+
+    def _cleanup_mqtt(self):
+        """Clean up MQTT client connection."""
+        if self._mqtt_client:
+            try:
+                self._mqtt_client.loop_stop()
+                self._mqtt_client.disconnect()
+            except Exception:
+                pass
+            self._mqtt_client = None
+            self._mqtt_connected = False
+
+    def cleanup(self):
+        """Clean up all resources."""
+        self._cleanup_mqtt()
+        if self._http_session:
+            try:
+                self._http_session.close()
+            except Exception:
+                pass
+            self._http_session = None

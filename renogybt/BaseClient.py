@@ -104,6 +104,12 @@ class BaseClient:
                     asyncio.set_event_loop(None)
                     self.loop = None
                     self.future = None
+                    # Cleanup data logger if present
+                    if hasattr(self, 'data_logger'):
+                        try:
+                            self.data_logger.cleanup()
+                        except Exception:
+                            pass
 
     async def connect(self):
         self.ble_manager = BLEManager(
@@ -148,10 +154,10 @@ class BaseClient:
                 self.sections[self.section_index]['parser'] != None and
                 self.sections[self.section_index]['words'] * 2 + 5 == len(response)):
                 # call the parser and update data
-                logging.info(f"on_data_received: read operation success")
+                logging.debug(f"on_data_received: read operation success")
                 self.__safe_parser(self.sections[self.section_index]['parser'], response)
             else:
-                logging.info(f"on_data_received: read operation failed: {response.hex()}")
+                logging.debug(f"on_data_received: read operation failed: {response.hex()}")
 
             if self.section_index >= len(self.sections) - 1: # last section, read complete
                 self.section_index = 0
@@ -173,7 +179,7 @@ class BaseClient:
             logging.warning("on_data_received: unknown operation={}".format(operation))
 
     def on_read_operation_complete(self):
-        logging.info("on_read_operation_complete")
+        logging.debug("on_read_operation_complete")
         self.data['__device'] = self.config['device']['alias']
         self.data['__client'] = self.__class__.__name__
         self.__safe_callback(self.on_data_callback, self.data)

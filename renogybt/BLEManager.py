@@ -10,6 +10,7 @@ DISCOVERY_TIMEOUT = 5  # max wait time to complete the bluetooth scanning (secon
 DISCOVER_RETRIES = 3   # number of times to retry discovery on failure
 DISCOVER_DELAY = 5     # wait time between retries (seconds)
 CONNECT_RETRIES = 3    # number of times to retry connecting
+MAX_BACKOFF_DELAY = 30  # maximum exponential backoff delay (seconds)
 
 class BLEManager:
     def __init__(
@@ -42,6 +43,7 @@ class BLEManager:
         self._discovery_timeout = discovery_timeout
         self._discover_retries = max(1, discover_retries)
         self._discover_delay = max(0, discover_delay)
+        self._reconnect_count = 0
 
     async def discover(self):
         mac_address = self.mac_address.upper()
@@ -69,8 +71,10 @@ class BLEManager:
                 )
             except BleakError as exc:
                 logging.error("Discovery failed: %s", exc)
+            # Exponential backoff for retries
             if attempt < self._discover_retries:
-                await asyncio.sleep(self._discover_delay)
+                delay = min(self._discover_delay * (2 ** (attempt - 1)), MAX_BACKOFF_DELAY)
+                await asyncio.sleep(delay)
             else:
                 self.connect_fail_callback(Exception("Discovery exhausted without finding target"))
                 return
@@ -113,11 +117,16 @@ class BLEManager:
                             logging.info(
                                 f"found write characteristic {characteristic.uuid}, service {service.uuid}"
                             )
+                # Reset reconnect counter on successful connection
+                self._reconnect_count = 0
                 return
             except Exception as exc:
                 logging.error("Error connecting to device: %s", exc)
+                # Exponential backoff for connection retries
                 if attempt < CONNECT_RETRIES:
-                    await asyncio.sleep(self._discover_delay)
+                    self._reconnect_count += 1
+                    delay = min(self._discover_delay * (2 ** (self._reconnect_count - 1)), MAX_BACKOFF_DELAY)
+                    await asyncio.sleep(delay)
                 else:
                     self.connect_fail_callback(exc)
 
@@ -136,9 +145,9 @@ class BLEManager:
         if self.write_char_handle is None:
             raise BleakError("Write characteristic handle is not available")
         try:
-            logging.info(f'writing to {self.write_char_uuid} {data}')
+            logging.debug(f'writing to {self.write_char_uuid} {data}')
             await self.client.write_gatt_char(self.write_char_handle, bytearray(data), response=False)
-            logging.info('characteristic_write_value succeeded')
+            logging.debug('characteristic_write_value succeeded')
             await asyncio.sleep(0.5)
         except Exception as e:
             logging.error('characteristic_write_value failed %s', e)

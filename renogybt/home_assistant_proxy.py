@@ -88,7 +88,7 @@ DEFAULT_API_VERSION_MINOR = 13
 
 PROTO_CLASS_TO_ID = {cls: msg_type for msg_type, cls in MESSAGE_TYPE_TO_PROTO.items()}
 
-ADVERTISEMENT_QUEUE_MAXSIZE = 256
+ADVERTISEMENT_QUEUE_MAXSIZE = 128  # Reduced from 256 for lower memory
 ADVERTISEMENT_DROP_LOG_INTERVAL = 100
 
 # ---------------------------------------------------------------------------
@@ -734,7 +734,11 @@ class ESPHomeProxyServer:
             return None
         message = BluetoothLEAdvertisementResponse()
         message.address = _mac_to_int(device.address)
-        message.name = (advertisement.local_name or device.name or "").encode("utf-8", "ignore")
+        # Truncate name to save memory
+        name = (advertisement.local_name or device.name or "")
+        if len(name) > 50:
+            name = name[:50]
+        message.name = name.encode("utf-8", "ignore")
         message.rssi = advertisement.rssi
         address_type = device.metadata.get("address_type") if device.metadata else None
         if isinstance(address_type, str):

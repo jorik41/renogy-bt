@@ -146,6 +146,10 @@ async def run_proxy(config_path: Path) -> None:
     except asyncio.CancelledError:  # pragma: no cover - shutdown path
         proxy.request_stop()
         raise
+    finally:
+        # Cleanup resources
+        data_logger.cleanup()
+        Utils.flush_energy_totals(energy_file)
 
 
 def main(argv: Optional[List[str]] = None) -> None:
