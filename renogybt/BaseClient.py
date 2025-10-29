@@ -91,12 +91,18 @@ class BaseClient:
                         task for task in all_tasks_fn(self.loop)
                         if task is not self.future and not task.done()
                     ]
-                    for task in pending:
-                        task.cancel()
+                    # Only cancel and wait for a limited number of tasks to avoid hanging
                     if pending:
-                        self.loop.run_until_complete(
-                            asyncio.gather(*pending, return_exceptions=True)
-                        )
+                        for task in pending:
+                            task.cancel()
+                        # Use wait_for with timeout to avoid indefinite waiting
+                        try:
+                            asyncio.wait_for(
+                                asyncio.gather(*pending, return_exceptions=True),
+                                timeout=5.0
+                            )
+                        except asyncio.TimeoutError:
+                            logging.warning("Timeout waiting for tasks to complete during cleanup")
                 except Exception:
                     pass
                 finally:
