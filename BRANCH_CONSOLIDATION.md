@@ -19,7 +19,7 @@ This document summarizes the consolidation of multiple feature branches into the
 ## Changes Included
 
 ### From PR #16 (Performance Optimizations)
-These optimizations target Raspberry Pi Zero 2W (512MB RAM) but benefit all platforms:
+These optimizations target resource-constrained devices like Raspberry Pi Zero 2W (512MB RAM total, targeting <50% usage) but benefit all platforms:
 
 #### Memory Optimizations
 - **Energy Totals Caching**: Reduced disk I/O by ~98% (write once per 60s instead of every update)
@@ -92,15 +92,16 @@ All optimization tests pass successfully:
 ✓ Memory usage well within limits
   - For 1000 data updates: 3.8 KB current, 7.2 KB peak
   - Total: <50 MB including Python runtime
-  - Well under 256 MB target (512 MB available on Pi Zero 2W)
+  - Target: <256 MB (50% of 512 MB available on Pi Zero 2W)
 ```
 
 ## Performance Improvements
 
 ### Memory Usage
 - **Peak memory for core operations**: < 25 KB
-- **Typical runtime**: < 50 MB total
-- **Target met**: Well within 256 MB goal (512 MB available)
+- **Typical runtime**: < 50 MB total (including Python runtime)
+- **Target**: < 256 MB (50% of 512 MB available on Pi Zero 2W)
+- **Result**: Well within target, leaves plenty of headroom for system
 
 ### Network Traffic Reduction
 - **MQTT**: ~90% reduction (connection pooling)
