@@ -55,6 +55,9 @@ class DataLogger:
         # Circuit breakers for different services
         self._remote_breaker = CircuitBreaker(failure_threshold=5, timeout=120)
         self._pvoutput_breaker = CircuitBreaker(failure_threshold=3, timeout=300)
+        # Rate limiting for MQTT publishes
+        self._last_mqtt_publish = {}  # track last publish time per topic
+        self._mqtt_min_interval = 1.0  # minimum 1 second between publishes to same topic
 
     def _get_http_session(self):
         """Get or create a persistent HTTP session."""
@@ -153,17 +156,25 @@ class DataLogger:
         topic_base = self.config['mqtt']['topic']
         topic = f"{topic_base.rstrip('/')}/{alias_id}"
 
+        # Rate limiting: skip if we published to this topic too recently
+        now = time.time()
+        last_publish = self._last_mqtt_publish.get(topic, 0)
+        if now - last_publish < self._mqtt_min_interval:
+            logging.debug("Rate limiting: skipping MQTT publish to %s (too soon)", topic)
+            return
+        
         try:
             # Reconnect if disconnected
             if not self._mqtt_connected:
                 client.reconnect()
                 # Give it a moment to reconnect
-                import time
                 time.sleep(0.5)
             
             result = client.publish(topic, json.dumps(json_data), qos=0)
             if result.rc != mqtt.MQTT_ERR_SUCCESS:
                 logging.error("mqtt publish failed with code %s", result.rc)
+            else:
+                self._last_mqtt_publish[topic] = now
         except Exception as exc:
             logging.error("mqtt publish failed: %s", exc)
             # Reset client on error to force reconnect

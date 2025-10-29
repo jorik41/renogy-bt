@@ -44,8 +44,15 @@ class BLEManager:
         self._discover_retries = max(1, discover_retries)
         self._discover_delay = max(0, discover_delay)
         self._reconnect_count = 0
+        self._cached_device = None  # Cache device to avoid repeated discovery
 
     async def discover(self):
+        # If we already have a cached device, try to reuse it
+        if self._cached_device and self._cached_device.address:
+            logging.info("Using cached device %s => %s", self._cached_device.name, self._cached_device.address)
+            self.device = self._cached_device
+            return
+        
         mac_address = self.mac_address.upper()
         for attempt in range(1, self._discover_retries + 1):
             try:
@@ -86,6 +93,7 @@ class BLEManager:
             ):
                 logging.info(f"Found matching device {dev.name} => {dev.address}")
                 self.device = dev
+                self._cached_device = dev  # Cache for next time
 
     async def connect(self):
         if not self.device:
