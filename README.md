@@ -26,6 +26,16 @@ python3 ./example.py config.ini
 
 The library now retries bluetooth discovery and connection automatically if the adapter is not ready right away. This is helpful on systems that take a moment to power on their bluetooth interface after a reboot.
 
+### Discovering your Renogy Bluetooth address
+
+Use the helper script to list nearby Bluetooth devices. Renogy devices usually start with `BT-TH`, `RNGRBP`, or `BTRIC`.
+
+```sh
+python3 scan_devices.py --adapter hci0
+```
+
+Devices whose names match a known prefix are flagged with a `*`. Copy the address and name into `config.ini`. When working with a Renogy Smart Battery hub, specify all battery `device_id` values (for example `48,49,50,51`) in the `[device]` section.
+
 ### Home Assistant bluetooth proxy (experimental)
 
 To emulate the ESPHome bluetooth proxy on hardware such as a Raspberry Pi Zero, enable the `[home_assistant_proxy]` section in `config.ini` and provide the details of your Home Assistant instance. The new `ha_proxy_example.py` entrypoint will keep the Renogy BLE session alive while also forwarding nearby advertisements to Home Assistant:
