@@ -17,6 +17,8 @@ from typing import TYPE_CHECKING, Callable, Optional
 
 from aioesphomeapi._frame_helper.packets import make_plain_text_packets
 from aioesphomeapi.api_pb2 import (  # type: ignore[attr-defined]
+    AuthenticationRequest,
+    AuthenticationResponse,
     BluetoothLEAdvertisementResponse,
     DeviceInfoRequest,
     DeviceInfoResponse,
@@ -156,6 +158,11 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
                     server_info=f"renogybt-proxy/{self.version}",
                 )
             )
+        elif isinstance(msg, AuthenticationRequest):
+            # Device doesn't require authentication
+            # Respond with successful authentication (invalid_password=False)
+            responses.append(AuthenticationResponse())
+            logger.info("Client authenticated (no password required)")
         elif isinstance(msg, DisconnectRequest):
             responses.append(DisconnectResponse())
             if self._transport:
