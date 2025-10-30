@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Iterable
 from typing import TYPE_CHECKING, Callable, Optional
 
 from aioesphomeapi._frame_helper.packets import make_plain_text_packets
