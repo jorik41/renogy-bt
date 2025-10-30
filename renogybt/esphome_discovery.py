@@ -87,6 +87,7 @@ class ESPHomeDiscovery:
             if local_ip and local_ip != "127.0.0.1":
                 return local_ip
         except Exception:
+            # Ignore errors in hostname resolution; will fall back to next method or default.
             pass
         
         # Method 4: Fallback to 0.0.0.0 (listen on all interfaces)
