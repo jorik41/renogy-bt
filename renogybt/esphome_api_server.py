@@ -184,6 +184,7 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
                     project_version=self.version,
                     webserver_port=0,
                     bluetooth_proxy_feature_flags=BLUETOOTH_PROXY_FEATURE_PASSIVE_SCAN,
+                    api_encryption_supported=False,  # Disable encryption requirement
                 )
             )
         elif isinstance(msg, ListEntitiesRequest):
