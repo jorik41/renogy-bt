@@ -162,7 +162,6 @@ class HomeAssistantAPIClient:
 
     async def send_advertisement(self, packet: AdvertisementPacket) -> None:
         """Send a BLE advertisement payload to Home Assistant.
-        
         Following ESPHome protocol, no authentication token is used.
         The proxy should be on a trusted network.
         """
