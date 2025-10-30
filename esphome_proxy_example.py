@@ -50,6 +50,9 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+# Supported Renogy device types
+SUPPORTED_DEVICE_TYPES = ['RNG_BATT', 'RNG_CTRL', 'RNG_CTRL_HIST', 'RNG_INVT', 'RNG_DCC']
+
 
 async def main():
     # Load configuration
@@ -76,21 +79,13 @@ async def main():
     for section in optional_sections:
         if not config.has_section(section):
             config.add_section(section)
-            if section == 'mqtt':
-                config.set(section, 'enabled', 'false')
-            elif section == 'remote_logging':
-                config.set(section, 'enabled', 'false')
-            elif section == 'pvoutput':
-                config.set(section, 'enabled', 'false')
+            config.set(section, 'enabled', 'false')
     
     # Check if proxy is enabled
     if not config['home_assistant_proxy'].getboolean('enabled', fallback=False):
         logger.error("Home Assistant proxy is not enabled in config.ini")
         logger.error("Set 'enabled = true' in [home_assistant_proxy] section")
         sys.exit(1)
-    
-    # Supported device types
-    SUPPORTED_DEVICE_TYPES = ['RNG_BATT', 'RNG_CTRL', 'RNG_CTRL_HIST', 'RNG_INVT', 'RNG_DCC']
     
     # Get configuration
     device_name = config['home_assistant_proxy'].get('device_name', 'renogy-bt-proxy')
