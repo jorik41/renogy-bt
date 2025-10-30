@@ -195,12 +195,18 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
             for company_id, data_bytes in advertisement_data.get(
                 "manufacturer_data", {}
             ).items():
-                manufacturer_data.append((int(company_id), bytes.fromhex(data_bytes)))
+                if isinstance(data_bytes, bytes):
+                    manufacturer_data.append((int(company_id), data_bytes))
+                else:
+                    manufacturer_data.append((int(company_id), bytes.fromhex(data_bytes)))
 
             # Convert service_data dict to list of tuples
             service_data = []
             for uuid_str, data_bytes in advertisement_data.get("service_data", {}).items():
-                service_data.append((uuid_str, bytes.fromhex(data_bytes)))
+                if isinstance(data_bytes, bytes):
+                    service_data.append((uuid_str, data_bytes))
+                else:
+                    service_data.append((uuid_str, bytes.fromhex(data_bytes)))
 
             # Create advertisement response
             adv_response = BluetoothLEAdvertisementResponse(
