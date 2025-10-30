@@ -38,7 +38,45 @@ Devices whose names match a known prefix are flagged with a `*`. Copy the addres
 
 ### Home Assistant bluetooth proxy
 
-The `ha_proxy_example.py` script emulates an ESP32 Bluetooth proxy on hardware such as a Raspberry Pi Zero. This allows Home Assistant to discover and integrate nearby BLE devices through your device.
+This project now supports **two different modes** for integrating with Home Assistant:
+
+#### 1. ESPHome Native API (NEW - Recommended)
+
+Use the ESPHome native API to make the device appear as a native ESPHome Bluetooth proxy in Home Assistant. This provides automatic discovery and seamless integration.
+
+**Features:**
+- Automatic discovery via mDNS/zeroconf
+- Native ESPHome integration (port 6053)
+- Zero configuration in Home Assistant
+- Full Bluetooth proxy functionality
+
+**Quick Start:**
+
+1. Edit `config.ini`:
+```ini
+[home_assistant_proxy]
+enabled = true
+use_native_api = true
+device_name = renogy-bt-proxy
+adapter = hci0
+```
+
+2. Run the ESPHome proxy:
+```sh
+python3 ./esphome_proxy_example.py
+```
+
+3. In Home Assistant:
+   - Go to Settings → Devices & Services
+   - Click "+ Add Integration"
+   - Search for "ESPHome"
+   - Your device appears automatically!
+
+📖 **[Full ESPHome Integration Guide](docs/ESPHOME_INTEGRATION.md)**
+
+#### 2. HTTP API (Legacy)
+
+The `ha_proxy_example.py` script uses HTTP endpoints to forward BLE advertisements. This is the original implementation.
 
 **Two Operation Modes:**
 
@@ -61,6 +99,7 @@ Enable the `[home_assistant_proxy]` section in `config.ini`:
 ```ini
 [home_assistant_proxy]
 enabled = true
+use_native_api = false  # Use HTTP mode
 with_renogy_client = false  # Set to true for combined mode
 host = homeassistant.local
 port = 8123
@@ -68,7 +107,7 @@ adapter = hci0
 source = my-bt-proxy
 ```
 
-**Running the proxy:**
+**Running the HTTP proxy:**
 
 ```sh
 # Standalone BT proxy (no Renogy client)
