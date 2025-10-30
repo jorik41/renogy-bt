@@ -51,7 +51,7 @@ class ESPHomeDiscovery:
             Local IP address as string
             
         Raises:
-            RuntimeError: If unable to determine local IP
+            RuntimeError: If unable to determine a valid local IP address
         """
         # Method 1: Try connecting to an external IP (works in most cases)
         try:
@@ -78,7 +78,8 @@ class ESPHomeDiscovery:
             finally:
                 s.close()
         except Exception:
-            pass
+            # Local gateway not reachable; will try other methods
+            logger.debug("Failed to get local IP using local gateway method")
             
         # Method 3: Get hostname and resolve it
         try:
@@ -87,16 +88,14 @@ class ESPHomeDiscovery:
             if local_ip and local_ip != "127.0.0.1":
                 return local_ip
         except Exception:
-            # Ignore errors in hostname resolution; will fall back to next method or default.
-            pass
+            # Hostname resolution failed; will raise error
+            logger.debug("Failed to get local IP using hostname resolution")
         
-        # Method 4: Fallback to 0.0.0.0 (listen on all interfaces)
-        # This will work but may cause issues in multi-interface systems
-        logger.warning(
-            "Unable to determine specific local IP, using 0.0.0.0 "
-            "(will listen on all interfaces)"
+        # Unable to determine a valid IP address
+        raise RuntimeError(
+            "Unable to determine a valid local IP address for mDNS advertisement. "
+            "Please check your network configuration."
         )
-        return "0.0.0.0"
 
     async def start(self) -> None:
         """Start advertising the ESPHome device via mDNS."""

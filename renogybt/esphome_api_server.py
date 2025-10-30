@@ -33,6 +33,9 @@ from aioesphomeapi.api_pb2 import (  # type: ignore[attr-defined]
 from aioesphomeapi.core import MESSAGE_TYPE_TO_PROTO
 from google.protobuf import message
 
+# Bluetooth proxy feature flags
+BLUETOOTH_PROXY_FEATURE_PASSIVE_SCAN = 1  # Passive scanning support
+
 PROTO_TO_MESSAGE_TYPE = {v: k for k, v in MESSAGE_TYPE_TO_PROTO.items()}
 
 logger = logging.getLogger(__name__)
@@ -96,15 +99,27 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
 
             # Read preamble (should be 0x00)
             if (preamble := self._read_varuint()) != 0x00:
-                logger.error("Incorrect preamble: %s", preamble)
+                logger.error("Incorrect preamble: %s, closing connection", preamble)
+                self._buffer = None
+                self._buffer_len = 0
+                if self._transport:
+                    self._transport.close()
                 return
 
             if (length := self._read_varuint()) == -1:
-                logger.error("Incorrect length")
+                logger.error("Incorrect length, closing connection")
+                self._buffer = None
+                self._buffer_len = 0
+                if self._transport:
+                    self._transport.close()
                 return
 
             if (msg_type := self._read_varuint()) == -1:
-                logger.error("Incorrect message type")
+                logger.error("Incorrect message type, closing connection")
+                self._buffer = None
+                self._buffer_len = 0
+                if self._transport:
+                    self._transport.close()
                 return
 
             if length == 0:
@@ -161,7 +176,7 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
                     project_name="renogybt",
                     project_version=self.version,
                     webserver_port=0,
-                    bluetooth_proxy_feature_flags=1,  # Passive scanning support
+                    bluetooth_proxy_feature_flags=BLUETOOTH_PROXY_FEATURE_PASSIVE_SCAN,
                 )
             )
         elif isinstance(msg, ListEntitiesRequest):
@@ -189,6 +204,14 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
             return
 
         try:
+            # Validate required fields
+            if "address" not in advertisement_data:
+                logger.warning("Advertisement data missing required 'address' field")
+                return
+            if "rssi" not in advertisement_data:
+                logger.warning("Advertisement data missing required 'rssi' field")
+                return
+                
             # Convert manufacturer_data dict to list of tuples
             manufacturer_data = []
             for company_id, data_bytes in advertisement_data.get(
