@@ -107,7 +107,6 @@ class AdvertisementPacket:
 
 class HomeAssistantAPIClient:
     """Minimal HTTP client used to forward advertisements to Home Assistant.
-    
     Following ESPHome Bluetooth proxy protocol, this client does not use
     authentication tokens. ESPHome proxies operate on trusted networks without
     bearer token authentication.
