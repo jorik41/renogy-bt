@@ -64,18 +64,33 @@ async def main():
     config.read(str(config_path))
     
     # Validate required config sections exist
-    required_sections = ['device', 'data', 'mqtt', 'home_assistant_proxy']
+    required_sections = ['device', 'data', 'home_assistant_proxy']
     missing_sections = [s for s in required_sections if not config.has_section(s)]
     if missing_sections:
         logger.error("Missing required config sections: %s", ', '.join(missing_sections))
         logger.error("Please check your config.ini file")
         sys.exit(1)
     
+    # Add optional sections if they don't exist
+    optional_sections = ['mqtt', 'remote_logging', 'pvoutput']
+    for section in optional_sections:
+        if not config.has_section(section):
+            config.add_section(section)
+            if section == 'mqtt':
+                config.set(section, 'enabled', 'false')
+            elif section == 'remote_logging':
+                config.set(section, 'enabled', 'false')
+            elif section == 'pvoutput':
+                config.set(section, 'enabled', 'false')
+    
     # Check if proxy is enabled
     if not config['home_assistant_proxy'].getboolean('enabled', fallback=False):
         logger.error("Home Assistant proxy is not enabled in config.ini")
         logger.error("Set 'enabled = true' in [home_assistant_proxy] section")
         sys.exit(1)
+    
+    # Supported device types
+    SUPPORTED_DEVICE_TYPES = ['RNG_BATT', 'RNG_CTRL', 'RNG_CTRL_HIST', 'RNG_INVT', 'RNG_DCC']
     
     # Get configuration
     device_name = config['home_assistant_proxy'].get('device_name', 'renogy-bt-proxy')
@@ -92,8 +107,12 @@ async def main():
     device_type = config['device'].get('type')
     if not device_type:
         logger.error("Device type not specified in config.ini [device] section")
-        logger.error("Set 'type' to one of: RNG_BATT, RNG_CTRL, RNG_INVT, RNG_DCC")
+        logger.error("Set 'type' to one of: %s", ', '.join(SUPPORTED_DEVICE_TYPES))
         sys.exit(1)
+    
+    if device_type not in SUPPORTED_DEVICE_TYPES:
+        logger.warning("Unknown device type '%s'. Supported types: %s", 
+                      device_type, ', '.join(SUPPORTED_DEVICE_TYPES))
     
     device_alias = config['device'].get('alias', 'renogy-device')
     renogy_client = None
