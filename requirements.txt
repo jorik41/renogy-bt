@@ -3,3 +3,6 @@ configparser
 requests
 paho-mqtt
 aiohttp
+aioesphomeapi
+protobuf
+zeroconf
