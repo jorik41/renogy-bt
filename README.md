@@ -36,11 +36,7 @@ python3 scan_devices.py --adapter hci0
 
 Devices whose names match a known prefix are flagged with a `*`. Copy the address and name into `config.ini`. When working with a Renogy Smart Battery hub, specify all battery `device_id` values (for example `48,49,50,51`) in the `[device]` section.
 
-### Home Assistant bluetooth proxy
-
-This project now supports **two different modes** for integrating with Home Assistant:
-
-#### 1. ESPHome Native API (NEW - Recommended)
+### Home Assistant ESPHome Bluetooth Proxy
 
 Use the ESPHome native API to make the device appear as a native ESPHome Bluetooth proxy in Home Assistant. This provides automatic discovery and seamless integration.
 
@@ -56,7 +52,6 @@ Use the ESPHome native API to make the device appear as a native ESPHome Bluetoo
 ```ini
 [home_assistant_proxy]
 enabled = true
-use_native_api = true
 device_name = renogy-bt-proxy
 adapter = hci0
 ```
@@ -73,58 +68,6 @@ python3 ./esphome_proxy_example.py
    - Your device appears automatically!
 
 📖 **[Full ESPHome Integration Guide](docs/ESPHOME_INTEGRATION.md)**
-
-#### 2. HTTP API (Legacy)
-
-The `ha_proxy_example.py` script uses HTTP endpoints to forward BLE advertisements. This is the original implementation.
-
-**Two Operation Modes:**
-
-1. **Standalone BT Proxy Mode** (default):
-   - Pure ESP32 Bluetooth proxy emulation
-   - Forwards BLE advertisements from all nearby devices to Home Assistant
-   - No Renogy-specific functionality
-   - Set `with_renogy_client = false` in config.ini
-
-2. **Combined Mode**:
-   - Runs both BT proxy AND Renogy battery client simultaneously
-   - Collects Renogy battery data while forwarding other BLE advertisements
-   - Shares a single Bluetooth adapter for both functions
-   - Set `with_renogy_client = true` in config.ini
-
-**Configuration:**
-
-Enable the `[home_assistant_proxy]` section in `config.ini`:
-
-```ini
-[home_assistant_proxy]
-enabled = true
-use_native_api = false  # Use HTTP mode
-with_renogy_client = false  # Set to true for combined mode
-host = homeassistant.local
-port = 8123
-adapter = hci0
-source = my-bt-proxy
-```
-
-**Running the HTTP proxy:**
-
-```sh
-# Standalone BT proxy (no Renogy client)
-python3 ./ha_proxy_example.py config.ini
-
-# For Renogy battery data only (no BT proxy), use:
-python3 ./example.py config.ini
-```
-
-The proxy will use the configured bluetooth adapter (defaults to `hci0`) and send data to Home Assistant's bluetooth remote API.
-
-**Home Assistant proxy tips:**
-
-- By default the proxy posts to `/api/bluetooth/adv`, with fallbacks for newer `/api/bluetooth/remote/adv` builds and the ESPHome-style `/ble/advertisements` port. Adjust `endpoint`/`fallback_endpoints` in `config.ini` if you run a custom setup.
-- Following ESPHome Bluetooth proxy protocol, no authentication token is required. The proxy operates on a trusted network, just like ESPHome devices.
-- When running in standalone mode, the `[device]` section is optional and ignored.
-- Restart the service after changing proxy settings so the new configuration is applied.
 
 **How to get mac address?**
 
