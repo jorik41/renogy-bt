@@ -65,7 +65,7 @@ class ESPHomeDiscovery:
             finally:
                 s.close()
         except Exception:
-            pass
+            logger.debug("Failed to get local IP using external IP method", exc_info=True)
         
         # Method 2: Try connecting to common local gateway
         try:
