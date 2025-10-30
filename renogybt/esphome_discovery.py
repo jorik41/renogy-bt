@@ -44,17 +44,65 @@ class ESPHomeDiscovery:
         self._aiozc: Optional[AsyncZeroconf] = None
         self._service_info: Optional[AsyncServiceInfo] = None
 
+    def _get_local_ip(self) -> str:
+        """Get local IP address using multiple fallback methods.
+        
+        Returns:
+            Local IP address as string
+            
+        Raises:
+            RuntimeError: If unable to determine local IP
+        """
+        # Method 1: Try connecting to an external IP (works in most cases)
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                # Use Google DNS as target (doesn't actually send data)
+                s.connect(("8.8.8.8", 80))
+                local_ip = s.getsockname()[0]
+                if local_ip and local_ip != "127.0.0.1":
+                    return local_ip
+            finally:
+                s.close()
+        except Exception:
+            pass
+        
+        # Method 2: Try connecting to common local gateway
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                s.connect(("192.168.1.1", 80))
+                local_ip = s.getsockname()[0]
+                if local_ip and local_ip != "127.0.0.1":
+                    return local_ip
+            finally:
+                s.close()
+        except Exception:
+            pass
+            
+        # Method 3: Get hostname and resolve it
+        try:
+            hostname = socket.gethostname()
+            local_ip = socket.gethostbyname(hostname)
+            if local_ip and local_ip != "127.0.0.1":
+                return local_ip
+        except Exception:
+            pass
+        
+        # Method 4: Fallback to 0.0.0.0 (listen on all interfaces)
+        # This will work but may cause issues in multi-interface systems
+        logger.warning(
+            "Unable to determine specific local IP, using 0.0.0.0 "
+            "(will listen on all interfaces)"
+        )
+        return "0.0.0.0"
+
     async def start(self) -> None:
         """Start advertising the ESPHome device via mDNS."""
         try:
-            # Get local IP address
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            try:
-                s.connect(("8.8.8.8", 80))
-                local_ip = s.getsockname()[0]
-            finally:
-                s.close()
-
+            # Get local IP address - try multiple methods for robustness
+            local_ip = self._get_local_ip()
+            
             # Convert IP to bytes
             ip_bytes = socket.inet_aton(local_ip)
 
