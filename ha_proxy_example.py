@@ -135,7 +135,6 @@ async def run_proxy(config_path: Path) -> None:
         adapter = config.get("device", "adapter", fallback=None)
     if adapter is None:
         adapter = "hci0"
-    
     # Get source identifier for the proxy
     proxy_source = config.get("home_assistant_proxy", "source", fallback=None)
     if proxy_source is None and config.has_section("device"):
