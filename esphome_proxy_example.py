@@ -63,6 +63,14 @@ async def main():
     config = configparser.ConfigParser(inline_comment_prefixes=('#'))
     config.read(str(config_path))
     
+    # Validate required config sections exist
+    required_sections = ['device', 'data', 'mqtt', 'home_assistant_proxy']
+    missing_sections = [s for s in required_sections if not config.has_section(s)]
+    if missing_sections:
+        logger.error("Missing required config sections: %s", ', '.join(missing_sections))
+        logger.error("Please check your config.ini file")
+        sys.exit(1)
+    
     # Check if proxy is enabled
     if not config['home_assistant_proxy'].getboolean('enabled', fallback=False):
         logger.error("Home Assistant proxy is not enabled in config.ini")
@@ -84,6 +92,7 @@ async def main():
     device_type = config['device'].get('type')
     if not device_type:
         logger.error("Device type not specified in config.ini [device] section")
+        logger.error("Set 'type' to one of: RNG_BATT, RNG_CTRL, RNG_INVT, RNG_DCC")
         sys.exit(1)
     
     device_alias = config['device'].get('alias', 'renogy-device')
