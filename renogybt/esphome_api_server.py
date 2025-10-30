@@ -314,7 +314,7 @@ class ESPHomeAPIServer:
                 self._advertisement_callback,
             )
 
-        self._server = await asyncio.get_event_loop().create_server(
+        self._server = await asyncio.get_running_loop().create_server(
             protocol_factory,
             host="0.0.0.0",
             port=self.port,
