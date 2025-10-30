@@ -1,4 +1,20 @@
-"""Example entrypoint for the Home Assistant Bluetooth proxy."""
+"""Example entrypoint for the Home Assistant Bluetooth proxy.
+
+This script can run in two modes:
+
+1. **Standalone BT Proxy Mode** (default, with_renogy_client=false):
+   - Acts as a pure ESP32 Bluetooth proxy
+   - Forwards BLE advertisements from nearby devices to Home Assistant
+   - No Renogy battery data collection
+   - Lightweight and focuses solely on proxy functionality
+
+2. **Combined Mode** (with_renogy_client=true):
+   - Runs both the BT proxy AND Renogy battery client
+   - Collects Renogy battery data while forwarding other BLE advertisements
+   - Useful when you want both functionalities on the same adapter
+
+For pure Renogy battery data collection without BT proxy, use example.py instead.
+"""
 
 from __future__ import annotations
 
@@ -101,22 +117,6 @@ def _create_client(config: configparser.ConfigParser, data_logger: DataLogger):
     raise ValueError(f"Unsupported device type '{device_type}'")
 
 
-def _resolve_token(config: configparser.ConfigParser, config_path: Path) -> Optional[str]:
-    token = config["home_assistant_proxy"].get("access_token", fallback="").strip()
-    token_file = config["home_assistant_proxy"].get("access_token_file", fallback="").strip()
-
-    if token_file:
-        file_path = Path(token_file).expanduser()
-        if not file_path.is_absolute():
-            file_path = (config_path.parent / file_path).resolve()
-        if not file_path.exists():
-            logging.error("Home Assistant token file not found: %s", file_path)
-            raise SystemExit(1)
-        token = file_path.read_text(encoding="utf-8").strip()
-
-    return token or None
-
-
 async def run_proxy(config_path: Path) -> None:
     config = configparser.ConfigParser(inline_comment_prefixes=("#",))
     config.read(config_path)
@@ -124,19 +124,42 @@ async def run_proxy(config_path: Path) -> None:
     if not config.getboolean("home_assistant_proxy", "enabled", fallback=False):
         raise RuntimeError("home_assistant_proxy.enabled must be true")
 
-    energy_file = str((config_path.parent / "energy_totals.json").resolve())
-    config["device"]["energy_file"] = energy_file
-
-    adapter = config["home_assistant_proxy"].get(
-        "adapter", fallback=config["device"].get("adapter")
+    # Check if we should run with Renogy client (default: False for standalone mode)
+    with_renogy_client = config.getboolean(
+        "home_assistant_proxy", "with_renogy_client", fallback=False
     )
-    proxy_source = config["home_assistant_proxy"].get(
-        "source", fallback=config["device"].get("alias", "renogybt-proxy")
-    )
-    data_logger = DataLogger(config)
 
-    def factory():
-        return _create_client(config, data_logger)
+    # Get adapter - first try proxy section, then device section, default to hci0
+    adapter = config.get("home_assistant_proxy", "adapter", fallback=None)
+    if adapter is None and config.has_section("device"):
+        adapter = config.get("device", "adapter", fallback=None)
+    if adapter is None:
+        adapter = "hci0"
+    # Get source identifier for the proxy
+    proxy_source = config.get("home_assistant_proxy", "source", fallback=None)
+    if proxy_source is None and config.has_section("device"):
+        proxy_source = config.get("device", "alias", fallback=None)
+    if proxy_source is None:
+        proxy_source = "renogybt-proxy"
+
+    # Only create data logger and client factory if running with Renogy client
+    battery_client_factory = None
+    if with_renogy_client:
+        if not config.has_section("device"):
+            raise RuntimeError(
+                "with_renogy_client=true requires [device] section in config"
+            )
+        energy_file = str((config_path.parent / "energy_totals.json").resolve())
+        config["device"]["energy_file"] = energy_file
+        data_logger = DataLogger(config)
+
+        def factory():
+            return _create_client(config, data_logger)
+
+        battery_client_factory = factory
+        logging.info("Running in combined mode (BT proxy + Renogy client)")
+    else:
+        logging.info("Running in standalone BT proxy mode")
 
     endpoint = config["home_assistant_proxy"].get(
         "endpoint", fallback="/api/bluetooth/adv"
@@ -161,7 +184,6 @@ async def run_proxy(config_path: Path) -> None:
     api_client = HomeAssistantAPIClient(
         host=config["home_assistant_proxy"].get("host", "homeassistant.local"),
         port=config["home_assistant_proxy"].getint("port", fallback=8123),
-        token=_resolve_token(config, config_path),
         ssl=config["home_assistant_proxy"].getboolean("ssl", fallback=False),
         endpoint=endpoint,
         fallback_endpoints=fallback_endpoints,
@@ -171,7 +193,7 @@ async def run_proxy(config_path: Path) -> None:
         api_client=api_client,
         source=proxy_source,
         adapter=adapter,
-        battery_client_factory=factory,
+        battery_client_factory=battery_client_factory,
     )
 
     try:
