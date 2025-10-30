@@ -252,7 +252,7 @@ class HomeAssistantBluetoothProxy:
 
         self._scanner = BleakScanner(
             detection_callback=self._on_advertisement,
-            adapter=self._adapter
+            adapter=self._adapter,
         )
 
         try:

@@ -145,15 +145,19 @@ async def run_proxy(config_path: Path) -> None:
         "home_assistant_proxy", "with_renogy_client", fallback=False
     )
 
-    # Get adapter - can be specified in proxy section or device section
-    adapter = config["home_assistant_proxy"].get(
-        "adapter", fallback=config.get("device", "adapter", fallback="hci0")
-    )
+    # Get adapter - first try proxy section, then device section, default to hci0
+    adapter = config.get("home_assistant_proxy", "adapter", fallback=None)
+    if adapter is None and config.has_section("device"):
+        adapter = config.get("device", "adapter", fallback=None)
+    if adapter is None:
+        adapter = "hci0"
     
     # Get source identifier for the proxy
-    proxy_source = config["home_assistant_proxy"].get(
-        "source", fallback=config.get("device", "alias", fallback="renogybt-proxy")
-    )
+    proxy_source = config.get("home_assistant_proxy", "source", fallback=None)
+    if proxy_source is None and config.has_section("device"):
+        proxy_source = config.get("device", "alias", fallback=None)
+    if proxy_source is None:
+        proxy_source = "renogybt-proxy"
 
     # Only create data logger and client factory if running with Renogy client
     battery_client_factory = None
