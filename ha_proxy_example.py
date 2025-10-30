@@ -1,4 +1,20 @@
-"""Example entrypoint for the Home Assistant Bluetooth proxy."""
+"""Example entrypoint for the Home Assistant Bluetooth proxy.
+
+This script can run in two modes:
+
+1. **Standalone BT Proxy Mode** (default, with_renogy_client=false):
+   - Acts as a pure ESP32 Bluetooth proxy
+   - Forwards BLE advertisements from nearby devices to Home Assistant
+   - No Renogy battery data collection
+   - Lightweight and focuses solely on proxy functionality
+
+2. **Combined Mode** (with_renogy_client=true):
+   - Runs both the BT proxy AND Renogy battery client
+   - Collects Renogy battery data while forwarding other BLE advertisements
+   - Useful when you want both functionalities on the same adapter
+
+For pure Renogy battery data collection without BT proxy, use example.py instead.
+"""
 
 from __future__ import annotations
 
@@ -124,19 +140,39 @@ async def run_proxy(config_path: Path) -> None:
     if not config.getboolean("home_assistant_proxy", "enabled", fallback=False):
         raise RuntimeError("home_assistant_proxy.enabled must be true")
 
-    energy_file = str((config_path.parent / "energy_totals.json").resolve())
-    config["device"]["energy_file"] = energy_file
+    # Check if we should run with Renogy client (default: False for standalone mode)
+    with_renogy_client = config.getboolean(
+        "home_assistant_proxy", "with_renogy_client", fallback=False
+    )
 
+    # Get adapter - can be specified in proxy section or device section
     adapter = config["home_assistant_proxy"].get(
-        "adapter", fallback=config["device"].get("adapter")
+        "adapter", fallback=config.get("device", "adapter", fallback="hci0")
     )
+    
+    # Get source identifier for the proxy
     proxy_source = config["home_assistant_proxy"].get(
-        "source", fallback=config["device"].get("alias", "renogybt-proxy")
+        "source", fallback=config.get("device", "alias", fallback="renogybt-proxy")
     )
-    data_logger = DataLogger(config)
 
-    def factory():
-        return _create_client(config, data_logger)
+    # Only create data logger and client factory if running with Renogy client
+    battery_client_factory = None
+    if with_renogy_client:
+        if not config.has_section("device"):
+            raise RuntimeError(
+                "with_renogy_client=true requires [device] section in config"
+            )
+        energy_file = str((config_path.parent / "energy_totals.json").resolve())
+        config["device"]["energy_file"] = energy_file
+        data_logger = DataLogger(config)
+
+        def factory():
+            return _create_client(config, data_logger)
+
+        battery_client_factory = factory
+        logging.info("Running in combined mode (BT proxy + Renogy client)")
+    else:
+        logging.info("Running in standalone BT proxy mode")
 
     endpoint = config["home_assistant_proxy"].get(
         "endpoint", fallback="/api/bluetooth/adv"
@@ -171,7 +207,7 @@ async def run_proxy(config_path: Path) -> None:
         api_client=api_client,
         source=proxy_source,
         adapter=adapter,
-        battery_client_factory=factory,
+        battery_client_factory=battery_client_factory,
     )
 
     try:

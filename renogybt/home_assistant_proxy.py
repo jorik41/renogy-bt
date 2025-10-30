@@ -1,18 +1,25 @@
 """Home Assistant Bluetooth proxy utilities.
 
-This module adds a small framework that mirrors the behaviour of the
-`bluetooth_proxy` component that is normally found in ESPHome devices.
-The aim is to allow this project to operate as if it were running on an
-ESP32 based proxy while continuing to poll the Renogy battery over the
-existing BLE connection.  The implementation focuses on providing the
-building blocks required to run on a Linux SBC such as a Raspberry Pi
-Zero where the bleak backend is already available.
+This module provides a framework that emulates the behaviour of the
+`bluetooth_proxy` component typically found in ESPHome devices. It allows
+this project to act as an ESP32 Bluetooth proxy, forwarding BLE advertisements
+to Home Assistant.
 
-The Home Assistant side of the proxy is intentionally kept flexible –
-it exposes a simple HTTP client that can be adapted to the needs of the
-target Home Assistant deployment.  The default endpoint follows the API
-shape of Home Assistant's Bluetooth remote receivers which accept the
-raw advertisement payloads.
+The proxy can operate in two modes:
+
+1. **Standalone Mode**: Pure ESP32 BT proxy functionality
+   - Scans for nearby BLE devices and forwards advertisements to Home Assistant
+   - No Renogy-specific functionality
+   - Lightweight and efficient for general BT proxy use
+
+2. **Combined Mode**: BT proxy + Renogy client
+   - Simultaneously acts as a BT proxy and polls Renogy batteries
+   - Allows sharing a single Bluetooth adapter for both functions
+   - Useful when running on hardware like a Raspberry Pi Zero
+
+The implementation is designed to be flexible and work on Linux SBCs where
+the bleak backend is available, providing a Python alternative to ESP32-based
+proxies.
 """
 
 from __future__ import annotations
@@ -211,10 +218,9 @@ class HomeAssistantAPIClient:
 class HomeAssistantBluetoothProxy:
     """Coordinates BLE scanning with Home Assistant forwarding.
 
-    The proxy keeps the Renogy BLE client alive by running it in a
-    background executor.  This mirrors the behaviour of ESPHome devices
-    which simultaneously act as a Bluetooth peripheral and a proxy for
-    Home Assistant.
+    This proxy acts as an ESP32 Bluetooth proxy, forwarding BLE advertisements
+    to Home Assistant. It can optionally keep a Renogy BLE client alive in the
+    background, but is designed to work as a standalone BT proxy as well.
     """
 
     def __init__(
@@ -240,16 +246,22 @@ class HomeAssistantBluetoothProxy:
         self._running = True
         self._stop_event = asyncio.Event()
 
-        await self._start_battery_client()
+        # Only start battery client if factory is provided
+        if self._battery_client_factory:
+            await self._start_battery_client()
 
-        self._scanner = BleakScanner(adapter=self._adapter)
-        self._scanner.register_detection_callback(self._on_advertisement)
+        self._scanner = BleakScanner(
+            detection_callback=self._on_advertisement,
+            adapter=self._adapter
+        )
 
         try:
             async with self._api_client:
                 await self._scanner.start()
+                mode = "with Renogy client" if self._battery_client_factory else "standalone"
                 logging.info(
-                    "Home Assistant bluetooth proxy started on adapter %s",
+                    "Home Assistant bluetooth proxy started (%s) on adapter %s",
+                    mode,
                     self._adapter,
                 )
                 try:
@@ -257,7 +269,8 @@ class HomeAssistantBluetoothProxy:
                 finally:
                     await self._scanner.stop()
         finally:
-            await self._stop_battery_client()
+            if self._battery_client_factory:
+                await self._stop_battery_client()
             self._running = False
             self._stop_event = None
 
