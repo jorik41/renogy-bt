@@ -38,34 +38,50 @@ Devices whose names match a known prefix are flagged with a `*`. Copy the addres
 
 ### Home Assistant ESPHome Bluetooth Proxy
 
-Use the ESPHome native API to make the device appear as a native ESPHome Bluetooth proxy in Home Assistant. This provides automatic discovery and seamless integration.
+Use the ESPHome native API to make the device appear as a native ESPHome Bluetooth proxy in Home Assistant. This provides automatic discovery and seamless integration while also reading your Renogy battery data and publishing to MQTT.
 
 **Features:**
 - Automatic discovery via mDNS/zeroconf
 - Native ESPHome integration (port 6053)
 - Zero configuration in Home Assistant
 - Full Bluetooth proxy functionality
+- **Integrated Renogy battery monitoring**
+- **MQTT publishing with Home Assistant discovery**
 
 **Quick Start:**
 
-1. Edit `config.ini`:
+1. Edit `config.ini` with your device settings:
 ```ini
+[device]
+adapter = hci0
+mac_addr = 6C:B2:FD:86:82:4D  # Your Renogy device MAC
+alias = BT-TH-FD86824D
+type = RNG_BATT  # or RNG_CTRL for charge controller
+
+[mqtt]
+enabled = true
+server = 192.168.1.89
+port = 1883
+topic = solar/state
+homeassistant_discovery = true
+
 [home_assistant_proxy]
 enabled = true
 device_name = renogy-bt-proxy
 adapter = hci0
 ```
 
-2. Run the ESPHome proxy:
+2. Run the integrated ESPHome proxy:
 ```sh
-python3 ./esphome_proxy_example.py
+python3 ./esphome_proxy_example.py config.ini
 ```
 
 3. In Home Assistant:
    - Go to Settings → Devices & Services
    - Click "+ Add Integration"
    - Search for "ESPHome"
-   - Your device appears automatically!
+   - Your device appears automatically as a Bluetooth proxy!
+   - Battery sensors will appear via MQTT discovery
 
 📖 **[Full ESPHome Integration Guide](docs/ESPHOME_INTEGRATION.md)**
 
