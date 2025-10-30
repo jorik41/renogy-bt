@@ -9,7 +9,6 @@ implementing the protobuf-based TCP protocol on port 6053.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import socket
 from typing import Optional
