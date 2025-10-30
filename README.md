@@ -83,7 +83,7 @@ The proxy will use the configured bluetooth adapter (defaults to `hci0`) and sen
 **Home Assistant proxy tips:**
 
 - By default the proxy posts to `/api/bluetooth/adv`, with fallbacks for newer `/api/bluetooth/remote/adv` builds and the ESPHome-style `/ble/advertisements` port. Adjust `endpoint`/`fallback_endpoints` in `config.ini` if you run a custom setup.
-- A long-lived token is optional. Leave `access_token` blank to run on a trusted network, or drop a token into `~/.config/renogy-bt/homeassistant.token` (and un-comment `access_token_file`) if your Home Assistant requires authentication.
+- Following ESPHome Bluetooth proxy protocol, no authentication token is required. The proxy operates on a trusted network, just like ESPHome devices.
 - When running in standalone mode, the `[device]` section is optional and ignored.
 - Restart the service after changing proxy settings so the new configuration is applied.
 

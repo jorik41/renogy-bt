@@ -117,22 +117,6 @@ def _create_client(config: configparser.ConfigParser, data_logger: DataLogger):
     raise ValueError(f"Unsupported device type '{device_type}'")
 
 
-def _resolve_token(config: configparser.ConfigParser, config_path: Path) -> Optional[str]:
-    token = config["home_assistant_proxy"].get("access_token", fallback="").strip()
-    token_file = config["home_assistant_proxy"].get("access_token_file", fallback="").strip()
-
-    if token_file:
-        file_path = Path(token_file).expanduser()
-        if not file_path.is_absolute():
-            file_path = (config_path.parent / file_path).resolve()
-        if not file_path.exists():
-            logging.error("Home Assistant token file not found: %s", file_path)
-            raise SystemExit(1)
-        token = file_path.read_text(encoding="utf-8").strip()
-
-    return token or None
-
-
 async def run_proxy(config_path: Path) -> None:
     config = configparser.ConfigParser(inline_comment_prefixes=("#",))
     config.read(config_path)
@@ -201,7 +185,6 @@ async def run_proxy(config_path: Path) -> None:
     api_client = HomeAssistantAPIClient(
         host=config["home_assistant_proxy"].get("host", "homeassistant.local"),
         port=config["home_assistant_proxy"].getint("port", fallback=8123),
-        token=_resolve_token(config, config_path),
         ssl=config["home_assistant_proxy"].getboolean("ssl", fallback=False),
         endpoint=endpoint,
         fallback_endpoints=fallback_endpoints,

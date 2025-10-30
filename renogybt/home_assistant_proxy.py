@@ -106,13 +106,17 @@ class AdvertisementPacket:
 
 
 class HomeAssistantAPIClient:
-    """Minimal HTTP client used to forward advertisements to Home Assistant."""
+    """Minimal HTTP client used to forward advertisements to Home Assistant.
+    
+    Following ESPHome Bluetooth proxy protocol, this client does not use
+    authentication tokens. ESPHome proxies operate on trusted networks without
+    bearer token authentication.
+    """
 
     def __init__(
         self,
         host: str,
         port: int,
-        token: Optional[str],
         ssl: bool = False,
         endpoint: str = "/api/bluetooth/adv",
         fallback_endpoints: Optional[Sequence[str]] = None,
@@ -122,7 +126,6 @@ class HomeAssistantAPIClient:
     ) -> None:
         self._host = host.rstrip("/")
         self._port = port
-        self._token = token
         self._ssl = ssl
         endpoints: List[str] = []
         if endpoint:
@@ -159,14 +162,14 @@ class HomeAssistantAPIClient:
         return f"{scheme}://{self._host}:{self._port}"
 
     async def send_advertisement(self, packet: AdvertisementPacket) -> None:
-        """Send a BLE advertisement payload to Home Assistant."""
+        """Send a BLE advertisement payload to Home Assistant.
+        
+        Following ESPHome protocol, no authentication token is used.
+        The proxy should be on a trusted network.
+        """
 
         if not self._session:
             raise RuntimeError("Client session has not been initialised")
-
-        headers = {}
-        if self._token:
-            headers["Authorization"] = f"Bearer {self._token}"
 
         payload = packet.as_payload()
         for index, endpoint in enumerate(self._endpoints):
@@ -175,7 +178,6 @@ class HomeAssistantAPIClient:
                 async with self._session.post(
                     url,
                     json=payload,
-                    headers=headers,
                 ) as resp:
                     if resp.status < 400:
                         if endpoint in self._endpoint_failures:
