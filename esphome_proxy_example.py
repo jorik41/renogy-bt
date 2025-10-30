@@ -81,13 +81,18 @@ async def main():
     battery_map = {}
     
     # Create battery client based on device type
-    device_type = config['device']['type']
+    device_type = config['device'].get('type')
+    if not device_type:
+        logger.error("Device type not specified in config.ini [device] section")
+        sys.exit(1)
+    
+    device_alias = config['device'].get('alias', 'renogy-device')
     renogy_client = None
     
     def on_battery_data_received(client, data):
         """Callback when battery data is received."""
         Utils.add_calculated_values(data)
-        alias = config['device']['alias']
+        alias = device_alias
         dev_id = data.get('device_id')
         alias_id = f"{alias}_{dev_id}" if dev_id is not None else alias
         Utils.update_energy_totals(
