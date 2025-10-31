@@ -241,11 +241,13 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
                     limit=BLUETOOTH_PROXY_MAX_CONNECTIONS,
                 )
             )
-            # Also send the scanner state to let Home Assistant know the scanner is ready
-            # Set scanner to RUNNING if it's currently IDLE (initial state)
-            # This lets HA know the proxy has an active scanner available
+            # Send scanner state to advertise Bluetooth capability to Home Assistant
+            # Set scanner to RUNNING if it's currently IDLE (initial state).
+            # If already RUNNING (from a BLE subscription), keep it RUNNING.
+            # This ensures HA knows the proxy has an active scanner during connection handshake.
             if self._scanner_state == BluetoothScannerState.BLUETOOTH_SCANNER_STATE_IDLE:
                 self._scanner_state = BluetoothScannerState.BLUETOOTH_SCANNER_STATE_RUNNING
+            # Always send the current state so HA knows scanner is available
             responses.append(
                 BluetoothScannerStateResponse(
                     state=self._scanner_state,
