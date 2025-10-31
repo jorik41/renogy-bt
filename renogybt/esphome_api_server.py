@@ -1,0 +1,322 @@
+"""ESPHome Native API server for Bluetooth proxy functionality."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from typing import Callable, List, Optional, Type
+
+from aioesphomeapi._frame_helper.packets import make_plain_text_packets
+from aioesphomeapi.api_pb2 import (  # type: ignore[attr-defined]
+    AuthenticationRequest,
+    AuthenticationResponse,
+    BluetoothLEAdvertisementResponse,
+    DeviceInfoRequest,
+    DeviceInfoResponse,
+    DisconnectRequest,
+    DisconnectResponse,
+    HelloRequest,
+    HelloResponse,
+    ListEntitiesDoneResponse,
+    ListEntitiesRequest,
+    NoiseEncryptionSetKeyRequest,
+    NoiseEncryptionSetKeyResponse,
+    PingRequest,
+    PingResponse,
+    SubscribeBluetoothLEAdvertisementsRequest,
+)
+from aioesphomeapi.core import MESSAGE_TYPE_TO_PROTO
+from google.protobuf.message import Message
+
+# Bluetooth proxy feature flags
+BLUETOOTH_PROXY_FEATURE_PASSIVE_SCAN = 1
+
+PROTO_TO_MESSAGE_TYPE = {v: k for k, v in MESSAGE_TYPE_TO_PROTO.items()}
+
+logger = logging.getLogger(__name__)
+if not logger.handlers:
+    logger.addHandler(logging.NullHandler())
+logger.setLevel(logging.DEBUG)
+
+
+class ESPHomeAPIProtocol(asyncio.Protocol):
+    """ESPHome native API protocol handler."""
+
+    def __init__(
+        self,
+        name: str,
+        mac_address: str,
+        version: str = "2024.12.0",
+        on_subscribe_callback: Optional[Callable[[Callable[[dict], None]], None]] = None,
+    ) -> None:
+        self.name = name
+        self.mac_address = mac_address
+        self.version = version
+        self._on_subscribe_callback = on_subscribe_callback
+        self._subscribed_to_ble = False
+        self._buffer: Optional[bytes] = None
+        self._buffer_len = 0
+        self._pos = 0
+        self._transport: Optional[asyncio.Transport] = None
+        self._writelines: Optional[Callable[[List[bytes]], None]] = None
+        self._close_after_send = False
+
+    # asyncio.Protocol API -------------------------------------------------
+
+    def connection_made(self, transport: asyncio.Transport) -> None:
+        self._transport = transport
+        self._writelines = transport.writelines  # type: ignore[attr-defined]
+        peer = transport.get_extra_info("peername")
+        logger.info("ESPHome API connection from %s", peer)
+
+    def connection_lost(self, exc: Optional[BaseException]) -> None:
+        logger.info("ESPHome API connection closed")
+        self._transport = None
+        self._writelines = None
+        self._subscribed_to_ble = False
+
+    def data_received(self, data: bytes) -> None:
+        if self._buffer is None:
+            self._buffer = data
+            self._buffer_len = len(data)
+        else:
+            self._buffer += data
+            self._buffer_len += len(data)
+
+        while self._buffer_len >= 3:
+            self._pos = 0
+
+            preamble = self._read_varuint()
+            if preamble != 0x00:
+                logger.error("Invalid ESPHome preamble %s; closing connection", preamble)
+                self._reset_buffer()
+                self._close_transport()
+                return
+
+            length = self._read_varuint()
+            if length == -1:
+                logger.error("Failed to read length; closing connection")
+                self._reset_buffer()
+                self._close_transport()
+                return
+
+            msg_type = self._read_varuint()
+            if msg_type == -1:
+                logger.error("Failed to read message type; closing connection")
+                self._reset_buffer()
+                self._close_transport()
+                return
+
+            if length == 0:
+                self._remove_from_buffer()
+                self._process_packet(msg_type, b"")
+                continue
+
+            packet = self._read(length)
+            if packet is None:
+                return  # Wait for the rest of the packet
+
+            self._remove_from_buffer()
+            self._process_packet(msg_type, packet)
+
+    # Message handling -----------------------------------------------------
+
+    def _process_packet(self, msg_type: int, payload: bytes) -> None:
+        try:
+            msg_class: Type[Message] = MESSAGE_TYPE_TO_PROTO[msg_type]
+            message = msg_class.FromString(payload)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.error("Error decoding ESPHome message %s: %s", msg_type, exc, exc_info=True)
+            return
+
+        logger.debug("Received ESPHome message: %s", msg_class.__name__)
+        self._handle_message(message)
+
+    def _handle_message(self, message: Message) -> None:
+        responses: List[Message] = []
+
+        if isinstance(message, HelloRequest):
+            responses.append(
+                HelloResponse(
+                    api_version_major=1,
+                    api_version_minor=5,  # Versions <= 1.5 predate Noise encryption
+                    name=self.name,
+                    server_info=f"renogybt-proxy/{self.version} (no-encryption)",
+                )
+            )
+        elif isinstance(message, AuthenticationRequest):
+            responses.append(AuthenticationResponse())
+            logger.info("ESPHome client authenticated (no password)")
+        elif isinstance(message, DisconnectRequest):
+            responses.append(DisconnectResponse())
+            self._close_after_send = True
+        elif isinstance(message, PingRequest):
+            responses.append(PingResponse())
+        elif isinstance(message, DeviceInfoRequest):
+            responses.append(
+                DeviceInfoResponse(
+                    uses_password=False,
+                    name=self.name,
+                    mac_address=self.mac_address,
+                    esphome_version=self.version,
+                    compilation_time="",
+                    model="Linux Bluetooth Proxy",
+                    manufacturer="RenogyBT",
+                    has_deep_sleep=False,
+                    project_name="renogybt",
+                    project_version=self.version,
+                    webserver_port=0,
+                    legacy_bluetooth_proxy_version=1,
+                    bluetooth_proxy_feature_flags=BLUETOOTH_PROXY_FEATURE_PASSIVE_SCAN,
+                    bluetooth_mac_address=self.mac_address,
+                    api_encryption_supported=False,
+                )
+            )
+        elif isinstance(message, ListEntitiesRequest):
+            responses.append(ListEntitiesDoneResponse())
+        elif isinstance(message, SubscribeBluetoothLEAdvertisementsRequest):
+            logger.info("ESPHome client subscribed to BLE advertisements")
+            self._subscribed_to_ble = True
+            if self._on_subscribe_callback:
+                self._on_subscribe_callback(self._send_ble_advertisement)
+        elif isinstance(message, NoiseEncryptionSetKeyRequest):
+            logger.info("ESPHome client attempted to set Noise key; rejecting")
+            responses.append(NoiseEncryptionSetKeyResponse(success=False))
+
+        if responses:
+            self._send_messages(responses)
+        if self._close_after_send:
+            self._close_after_send = False
+            self._close_transport()
+
+    # Helpers --------------------------------------------------------------
+
+    def _send_ble_advertisement(self, advertisement: dict) -> None:
+        if not self._subscribed_to_ble or not self._writelines:
+            return
+
+        try:
+            bluetooth_response = BluetoothLEAdvertisementResponse(
+                address=int(advertisement["address"].replace(":", ""), 16),
+                rssi=int(advertisement.get("rssi", 0)),
+                address_type=1 if advertisement.get("address_type") == "random" else 0,
+                name=advertisement.get("name", ""),
+                service_uuids=advertisement.get("service_uuids", []),
+                manufacturer_data=[
+                    (int(company_id), bytes.fromhex(data) if isinstance(data, str) else data)
+                    for company_id, data in (advertisement.get("manufacturer_data") or {}).items()
+                ],
+                service_data=[
+                    (uuid, bytes.fromhex(data) if isinstance(data, str) else data)
+                    for uuid, data in (advertisement.get("service_data") or {}).items()
+                ],
+            )
+            self._send_messages([bluetooth_response])
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.error("Failed to serialise BLE advertisement: %s", exc, exc_info=True)
+
+    def _send_messages(self, messages: List[Message]) -> None:
+        if not self._writelines:
+            return
+
+        try:
+            packets = [
+                (PROTO_TO_MESSAGE_TYPE[msg.__class__], msg.SerializeToString())
+                for msg in messages
+            ]
+            for msg in messages:
+                logger.debug("Sending ESPHome message: %s", msg.__class__.__name__)
+            payloads = make_plain_text_packets(packets)
+            for payload in payloads:
+                logger.debug("ESPHome packet bytes (len=%d): %s", len(payload), payload.hex())
+                self._transport.write(payload)  # type: ignore[union-attr]
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.error("Failed to send ESPHome messages: %s", exc, exc_info=True)
+
+    def _read(self, length: int) -> Optional[bytes]:
+        new_pos = self._pos + length
+        if self._buffer_len < new_pos:
+            return None
+        assert self._buffer is not None
+        data = self._buffer[self._pos:new_pos]
+        self._pos = new_pos
+        return data
+
+    def _read_varuint(self) -> int:
+        if not self._buffer:
+            return -1
+        result = 0
+        shift = 0
+        while self._buffer_len > self._pos:
+            byte = self._buffer[self._pos]
+            self._pos += 1
+            result |= (byte & 0x7F) << shift
+            if not (byte & 0x80):
+                return result
+            shift += 7
+        return -1
+
+    def _remove_from_buffer(self) -> None:
+        end_pos = self._pos
+        self._buffer_len -= end_pos
+        if self._buffer_len == 0:
+            self._buffer = None
+            return
+        assert self._buffer is not None
+        self._buffer = self._buffer[end_pos:]
+
+    def _reset_buffer(self) -> None:
+        self._buffer = None
+        self._buffer_len = 0
+        self._pos = 0
+
+    def _close_transport(self) -> None:
+        if self._transport:
+            self._transport.close()
+class ESPHomeAPIServer:
+    """Small wrapper that exposes ESPHomeAPIProtocol on a TCP port."""
+
+    def __init__(
+        self,
+        name: str,
+        mac_address: str,
+        port: int = 6053,
+        version: str = "2024.12.0",
+    ) -> None:
+        self.name = name
+        self.mac_address = mac_address
+        self.port = port
+        self.version = version
+        self._server: Optional[asyncio.base_events.Server] = None
+        self._advertisement_callback: Optional[Callable[[Callable[[dict], None]], None]] = None
+
+    def set_advertisement_callback(self, callback: Callable[[Callable[[dict], None]], None]) -> None:
+        self._advertisement_callback = callback
+
+    async def start(self) -> None:
+        loop = asyncio.get_running_loop()
+
+        def factory() -> ESPHomeAPIProtocol:
+            return ESPHomeAPIProtocol(
+                self.name,
+                self.mac_address,
+                self.version,
+                self._advertisement_callback,
+            )
+
+        self._server = await loop.create_server(factory, host="0.0.0.0", port=self.port)
+        logger.info("ESPHome native API server listening on %d", self.port)
+
+    async def stop(self) -> None:
+        if not self._server:
+            return
+        self._server.close()
+        await self._server.wait_closed()
+        logger.info("ESPHome native API server stopped")
+
+
+__all__ = [
+    "ESPHomeAPIServer",
+    "ESPHomeAPIProtocol",
+    "BLUETOOTH_PROXY_FEATURE_PASSIVE_SCAN",
+]

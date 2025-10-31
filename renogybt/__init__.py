@@ -5,11 +5,8 @@ from .RoverHistoryClient import RoverHistoryClient
 from .InverterClient import InverterClient
 from .DCChargerClient import DCChargerClient
 from .Utils import *
-from .home_assistant_proxy import (
-    AdvertisementPacket,
-    HomeAssistantAPIClient,
-    HomeAssistantBluetoothProxy,
-)
+from .esphome_api_server import ESPHomeAPIServer
+from .esphome_discovery import ESPHomeDiscovery
 
 __all__ = [
     "RoverClient",
@@ -18,7 +15,6 @@ __all__ = [
     "RoverHistoryClient",
     "InverterClient",
     "DCChargerClient",
-    "AdvertisementPacket",
-    "HomeAssistantAPIClient",
-    "HomeAssistantBluetoothProxy",
+    "ESPHomeAPIServer",
+    "ESPHomeDiscovery",
 ]

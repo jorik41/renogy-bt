@@ -1,0 +1,15 @@
+[Unit]
+Description=Renogy BT Home Assistant Bluetooth proxy
+After=network-online.target bluetooth.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/jorik/renogy-bt
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/jorik/renogy-bt/venv/bin/python /home/jorik/renogy-bt/renogy_bt_proxy.py /home/jorik/renogy-bt/config.ini
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
