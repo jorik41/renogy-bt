@@ -412,7 +412,6 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
         if self._transport:
             self._transport.close()
 
-
 class ESPHomeAPIServer:
     """Small wrapper that exposes ESPHomeAPIProtocol on a TCP port."""
 
