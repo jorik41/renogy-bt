@@ -173,6 +173,7 @@ async def run_proxy(config_path: Path) -> None:
         name=device_name,
         port=native_port,
         mac=proxy_mac,
+        ip=config.get(proxy_section, "mdns_ip", fallback=None),
     )
 
     send_advertisement_callback: Optional[Callable[[Dict[str, object]], None]] = None

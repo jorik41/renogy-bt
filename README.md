@@ -37,6 +37,10 @@ with Bluetooth proxy capabilities. Go to **Settings → Devices & Services** and
 you should see a notification for the discovered device. Simply click
 "Configure" to add it.
 
+If your network uses multiple interfaces (for example, ethernet and Wi-Fi) and
+Home Assistant detects the wrong address, set `mdns_ip` under
+`[home_assistant_proxy]` in `config.ini` to the IP you want advertised.
+
 **Manual Setup:**
 
 If automatic discovery doesn't work, you can manually add the proxy:

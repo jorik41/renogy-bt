@@ -21,16 +21,18 @@ class ESPHomeDiscovery:
         port: int = 6053,
         version: str = "2024.12.0",
         mac: Optional[str] = None,
+        ip: Optional[str] = None,
     ) -> None:
         self.name = name.replace(" ", "-").lower()
         self.port = port
         self.version = version
         self.mac = (mac or "00:00:00:00:00:00").lower()
+        self._ip_override = ip
         self._aiozc: Optional[AsyncZeroconf] = None
         self._service_info: Optional[AsyncServiceInfo] = None
 
     async def start(self) -> None:
-        ip_addr = self._detect_ip()
+        ip_addr = self._ip_override or self._detect_ip()
         address = socket.inet_aton(ip_addr)
 
         properties = {
