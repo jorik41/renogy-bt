@@ -241,6 +241,16 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
                     limit=BLUETOOTH_PROXY_MAX_CONNECTIONS,
                 )
             )
+            # Also send the scanner state to let Home Assistant know the scanner is ready
+            # The scanner should be in RUNNING state to indicate it's actively scanning
+            self._scanner_state = BluetoothScannerState.BLUETOOTH_SCANNER_STATE_RUNNING
+            responses.append(
+                BluetoothScannerStateResponse(
+                    state=self._scanner_state,
+                    mode=self._scanner_mode,
+                    configured_mode=self._scanner_mode,
+                )
+            )
         elif isinstance(message, BluetoothScannerSetModeRequest):
             # Handle scanner mode changes (active/passive)
             logger.info("ESPHome client requested scanner mode change to %s", message.mode)
