@@ -139,7 +139,7 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
             responses.append(
                 HelloResponse(
                     api_version_major=1,
-                    api_version_minor=10,
+                    api_version_minor=13,
                     name=self.name,
                     server_info=f"renogybt-proxy/{self.version}",
                 )
