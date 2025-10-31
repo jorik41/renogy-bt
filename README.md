@@ -29,9 +29,25 @@ forwarder. Enable the `[home_assistant_proxy]` section in `config.ini`
 python3 ./renogy_bt_proxy.py config.ini
 ```
 
-Home Assistant will discover the device automatically through the ESPHome
-integration (Settings → Devices & Services → Add Integration → ESPHome). The
-proxy keeps the Renogy BLE client running alongside the ESPHome Bluetooth
+**Automatic Discovery:**
+
+Home Assistant will automatically discover the proxy through mDNS when it's
+running on the same network. The proxy advertises itself as an ESPHome device
+with Bluetooth proxy capabilities. Go to **Settings → Devices & Services** and
+you should see a notification for the discovered device. Simply click
+"Configure" to add it.
+
+**Manual Setup:**
+
+If automatic discovery doesn't work, you can manually add the proxy:
+1. Go to **Settings → Devices & Services → Add Integration → ESPHome**
+2. Enter the IP address or hostname of the machine running the proxy
+3. Port: `6053` (or the port configured in your `config.ini`)
+4. Leave the password blank unless you configured one
+5. The proxy will appear as a Bluetooth adapter in Home Assistant's Bluetooth
+   settings, allowing you to see BLE advertisements in the Bluetooth visualizer
+
+The proxy keeps the Renogy BLE client running alongside the ESPHome Bluetooth
 proxy so a single adapter can forward advertisements and read battery data.
 
 **How to get mac address?**
