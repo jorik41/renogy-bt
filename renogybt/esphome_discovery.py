@@ -117,7 +117,6 @@ class ESPHomeDiscovery:
                 "platform": "linux",
                 "board": "generic",
                 "network": "wifi",
-                "api_encryption": "false",  # We don't support encryption yet
             }
 
             self._service_info = AsyncServiceInfo(
