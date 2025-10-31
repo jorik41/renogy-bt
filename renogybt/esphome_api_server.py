@@ -37,8 +37,22 @@ from aioesphomeapi.api_pb2 import (  # type: ignore[attr-defined]
 from aioesphomeapi.core import MESSAGE_TYPE_TO_PROTO
 from google.protobuf.message import Message
 
-# Bluetooth proxy feature flags
-BLUETOOTH_PROXY_FEATURE_PASSIVE_SCAN = 1
+# Bluetooth proxy feature flags (based on ESPHome bluetooth_proxy component)
+BLUETOOTH_PROXY_FEATURE_PASSIVE_SCAN = 1 << 0
+BLUETOOTH_PROXY_FEATURE_ACTIVE_CONNECTIONS = 1 << 1
+BLUETOOTH_PROXY_FEATURE_REMOTE_CACHING = 1 << 2
+BLUETOOTH_PROXY_FEATURE_PAIRING = 1 << 3
+BLUETOOTH_PROXY_FEATURE_CACHE_CLEARING = 1 << 4
+BLUETOOTH_PROXY_FEATURE_RAW_ADVERTISEMENTS = 1 << 5
+BLUETOOTH_PROXY_FEATURE_STATE_AND_MODE = 1 << 6
+
+# We support passive scan, raw advertisements, and state/mode reporting
+# but not active connections, caching, pairing, or cache clearing
+BLUETOOTH_PROXY_FEATURES = (
+    BLUETOOTH_PROXY_FEATURE_PASSIVE_SCAN
+    | BLUETOOTH_PROXY_FEATURE_RAW_ADVERTISEMENTS
+    | BLUETOOTH_PROXY_FEATURE_STATE_AND_MODE
+)
 
 PROTO_TO_MESSAGE_TYPE = {v: k for k, v in MESSAGE_TYPE_TO_PROTO.items()}
 
@@ -180,7 +194,7 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
                     project_version=self.version,
                     webserver_port=0,
                     legacy_bluetooth_proxy_version=1,
-                    bluetooth_proxy_feature_flags=BLUETOOTH_PROXY_FEATURE_PASSIVE_SCAN,
+                    bluetooth_proxy_feature_flags=BLUETOOTH_PROXY_FEATURES,
                     bluetooth_mac_address=self.mac_address,
                     api_encryption_supported=False,
                 )
@@ -433,4 +447,7 @@ __all__ = [
     "ESPHomeAPIServer",
     "ESPHomeAPIProtocol",
     "BLUETOOTH_PROXY_FEATURE_PASSIVE_SCAN",
+    "BLUETOOTH_PROXY_FEATURE_RAW_ADVERTISEMENTS",
+    "BLUETOOTH_PROXY_FEATURE_STATE_AND_MODE",
+    "BLUETOOTH_PROXY_FEATURES",
 ]
