@@ -42,8 +42,6 @@ class ESPHomeDiscovery:
             "board": "generic",
             "network": "ethernet",
             "api_version": "1.13",
-            "api_encryption": "false",
-            "noise_encryption": "false",
             "use_password": "false",
             "bluetooth_proxy": "true",
             "bluetooth_proxy_version": "5",
