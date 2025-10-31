@@ -196,7 +196,6 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
                     project_name="renogybt",
                     project_version=self.version,
                     webserver_port=0,
-                    legacy_bluetooth_proxy_version=1,
                     bluetooth_proxy_feature_flags=BLUETOOTH_PROXY_FEATURES,
                     bluetooth_mac_address=self.mac_address,
                     api_encryption_supported=False,
