@@ -139,9 +139,9 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
             responses.append(
                 HelloResponse(
                     api_version_major=1,
-                    api_version_minor=5,  # Versions <= 1.5 predate Noise encryption
+                    api_version_minor=13,
                     name=self.name,
-                    server_info=f"renogybt-proxy/{self.version} (no-encryption)",
+                    server_info=f"renogybt-proxy/{self.version}",
                 )
             )
         elif isinstance(message, AuthenticationRequest):
@@ -196,11 +196,15 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
             return
 
         try:
+            # Ensure name is bytes - the protobuf expects bytes
+            name_value = advertisement.get("name", "")
+            name = name_value.encode() if isinstance(name_value, str) else name_value
+            
             bluetooth_response = BluetoothLEAdvertisementResponse(
                 address=int(advertisement["address"].replace(":", ""), 16),
                 rssi=int(advertisement.get("rssi", 0)),
                 address_type=1 if advertisement.get("address_type") == "random" else 0,
-                name=advertisement.get("name", ""),
+                name=name,
                 service_uuids=advertisement.get("service_uuids", []),
                 manufacturer_data=[
                     (int(company_id), bytes.fromhex(data) if isinstance(data, str) else data)
