@@ -10,7 +10,14 @@ from aioesphomeapi._frame_helper.packets import make_plain_text_packets
 from aioesphomeapi.api_pb2 import (  # type: ignore[attr-defined]
     AuthenticationRequest,
     AuthenticationResponse,
+    BluetoothConnectionsFreeResponse,
     BluetoothLEAdvertisementResponse,
+    BluetoothLERawAdvertisement,
+    BluetoothLERawAdvertisementsResponse,
+    BluetoothScannerMode,
+    BluetoothScannerSetModeRequest,
+    BluetoothScannerState,
+    BluetoothScannerStateResponse,
     DeviceInfoRequest,
     DeviceInfoResponse,
     DisconnectRequest,
@@ -23,13 +30,32 @@ from aioesphomeapi.api_pb2 import (  # type: ignore[attr-defined]
     NoiseEncryptionSetKeyResponse,
     PingRequest,
     PingResponse,
+    SubscribeBluetoothConnectionsFreeRequest,
     SubscribeBluetoothLEAdvertisementsRequest,
+    UnsubscribeBluetoothLEAdvertisementsRequest,
 )
 from aioesphomeapi.core import MESSAGE_TYPE_TO_PROTO
 from google.protobuf.message import Message
 
-# Bluetooth proxy feature flags
-BLUETOOTH_PROXY_FEATURE_PASSIVE_SCAN = 1
+# Bluetooth proxy feature flags (based on ESPHome bluetooth_proxy component)
+BLUETOOTH_PROXY_FEATURE_PASSIVE_SCAN = 1 << 0
+BLUETOOTH_PROXY_FEATURE_ACTIVE_CONNECTIONS = 1 << 1
+BLUETOOTH_PROXY_FEATURE_REMOTE_CACHING = 1 << 2
+BLUETOOTH_PROXY_FEATURE_PAIRING = 1 << 3
+BLUETOOTH_PROXY_FEATURE_CACHE_CLEARING = 1 << 4
+BLUETOOTH_PROXY_FEATURE_RAW_ADVERTISEMENTS = 1 << 5
+BLUETOOTH_PROXY_FEATURE_STATE_AND_MODE = 1 << 6
+
+# We support passive scan, raw advertisements, and state/mode reporting
+# but not active connections, caching, pairing, or cache clearing
+BLUETOOTH_PROXY_FEATURES = (
+    BLUETOOTH_PROXY_FEATURE_PASSIVE_SCAN
+    | BLUETOOTH_PROXY_FEATURE_RAW_ADVERTISEMENTS
+    | BLUETOOTH_PROXY_FEATURE_STATE_AND_MODE
+)
+
+# Connection limits - we don't support active connections
+BLUETOOTH_PROXY_MAX_CONNECTIONS = 0
 
 PROTO_TO_MESSAGE_TYPE = {v: k for k, v in MESSAGE_TYPE_TO_PROTO.items()}
 
@@ -54,6 +80,9 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
         self.version = version
         self._on_subscribe_callback = on_subscribe_callback
         self._subscribed_to_ble = False
+        self._subscribed_to_connections_free = False
+        self._scanner_mode = BluetoothScannerMode.BLUETOOTH_SCANNER_MODE_PASSIVE
+        self._scanner_state = BluetoothScannerState.BLUETOOTH_SCANNER_STATE_IDLE
         self._buffer: Optional[bytes] = None
         self._buffer_len = 0
         self._pos = 0
@@ -74,6 +103,7 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
         self._transport = None
         self._writelines = None
         self._subscribed_to_ble = False
+        self._subscribed_to_connections_free = False
 
     def data_received(self, data: bytes) -> None:
         if self._buffer is None:
@@ -167,7 +197,7 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
                     project_version=self.version,
                     webserver_port=0,
                     legacy_bluetooth_proxy_version=1,
-                    bluetooth_proxy_feature_flags=BLUETOOTH_PROXY_FEATURE_PASSIVE_SCAN,
+                    bluetooth_proxy_feature_flags=BLUETOOTH_PROXY_FEATURES,
                     bluetooth_mac_address=self.mac_address,
                     api_encryption_supported=False,
                 )
@@ -177,8 +207,52 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
         elif isinstance(message, SubscribeBluetoothLEAdvertisementsRequest):
             logger.info("ESPHome client subscribed to BLE advertisements")
             self._subscribed_to_ble = True
+            self._scanner_state = BluetoothScannerState.BLUETOOTH_SCANNER_STATE_RUNNING
+            # Send scanner state response
+            responses.append(
+                BluetoothScannerStateResponse(
+                    state=self._scanner_state,
+                    mode=self._scanner_mode,
+                    configured_mode=self._scanner_mode,
+                )
+            )
             if self._on_subscribe_callback:
                 self._on_subscribe_callback(self._send_ble_advertisement)
+        elif isinstance(message, UnsubscribeBluetoothLEAdvertisementsRequest):
+            logger.info("ESPHome client unsubscribed from BLE advertisements")
+            self._subscribed_to_ble = False
+            self._scanner_state = BluetoothScannerState.BLUETOOTH_SCANNER_STATE_IDLE
+            # Send scanner state response
+            responses.append(
+                BluetoothScannerStateResponse(
+                    state=self._scanner_state,
+                    mode=self._scanner_mode,
+                    configured_mode=self._scanner_mode,
+                )
+            )
+        elif isinstance(message, SubscribeBluetoothConnectionsFreeRequest):
+            logger.info("ESPHome client subscribed to connections free updates")
+            self._subscribed_to_connections_free = True
+            # Send initial connections free response
+            # We don't support active connections, so report 0 free/limit
+            responses.append(
+                BluetoothConnectionsFreeResponse(
+                    free=BLUETOOTH_PROXY_MAX_CONNECTIONS,
+                    limit=BLUETOOTH_PROXY_MAX_CONNECTIONS,
+                )
+            )
+        elif isinstance(message, BluetoothScannerSetModeRequest):
+            # Handle scanner mode changes (active/passive)
+            logger.info("ESPHome client requested scanner mode change to %s", message.mode)
+            self._scanner_mode = message.mode
+            # Send scanner state response with new mode
+            responses.append(
+                BluetoothScannerStateResponse(
+                    state=self._scanner_state,
+                    mode=self._scanner_mode,
+                    configured_mode=BluetoothScannerMode.BLUETOOTH_SCANNER_MODE_PASSIVE,
+                )
+            )
         elif isinstance(message, NoiseEncryptionSetKeyRequest):
             logger.info("ESPHome client attempted to set Noise key; rejecting")
             responses.append(NoiseEncryptionSetKeyResponse(success=False))
@@ -196,24 +270,84 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
             return
 
         try:
-            # Ensure name is bytes - the protobuf expects bytes
-            name_value = advertisement.get("name", "")
-            name = name_value.encode() if isinstance(name_value, str) else name_value
+            # Convert the advertisement to raw format
+            address = int(advertisement["address"].replace(":", ""), 16)
+            rssi = int(advertisement.get("rssi", 0))
+            address_type = 1 if advertisement.get("address_type") == "random" else 0
             
-            bluetooth_response = BluetoothLEAdvertisementResponse(
-                address=int(advertisement["address"].replace(":", ""), 16),
-                rssi=int(advertisement.get("rssi", 0)),
-                address_type=1 if advertisement.get("address_type") == "random" else 0,
-                name=name,
-                service_uuids=advertisement.get("service_uuids", []),
-                manufacturer_data=[
-                    (int(company_id), bytes.fromhex(data) if isinstance(data, str) else data)
-                    for company_id, data in (advertisement.get("manufacturer_data") or {}).items()
-                ],
-                service_data=[
-                    (uuid, bytes.fromhex(data) if isinstance(data, str) else data)
-                    for uuid, data in (advertisement.get("service_data") or {}).items()
-                ],
+            # Build raw BLE advertisement data
+            # This should include the complete advertisement packet data
+            # For now, we'll create a minimal valid packet
+            raw_data = bytearray()
+            
+            # Add name if present (AD Type 0x09 = Complete Local Name)
+            name_value = advertisement.get("name", b"")
+            if isinstance(name_value, str):
+                name_value = name_value.encode()
+            if name_value:
+                raw_data.append(len(name_value) + 1)  # Length
+                raw_data.append(0x09)  # AD Type: Complete Local Name
+                raw_data.extend(name_value)
+            
+            # Add manufacturer data if present (AD Type 0xFF)
+            manufacturer_data = advertisement.get("manufacturer_data", {})
+            for company_id, data in manufacturer_data.items():
+                company_id_int = int(company_id)
+                if isinstance(data, str):
+                    data = bytes.fromhex(data)
+                raw_data.append(len(data) + 3)  # Length (data + 1 type + 2 company ID)
+                raw_data.append(0xFF)  # AD Type: Manufacturer Specific Data
+                raw_data.append(company_id_int & 0xFF)  # Company ID (little-endian)
+                raw_data.append((company_id_int >> 8) & 0xFF)
+                raw_data.extend(data)
+            
+            # Add service data if present (AD Type 0x16 for 16-bit UUIDs)
+            service_data = advertisement.get("service_data", {})
+            for uuid_str, data in service_data.items():
+                if isinstance(data, str):
+                    data = bytes.fromhex(data)
+                # For 16-bit UUIDs (4-character hex strings)
+                if len(uuid_str) == 4:
+                    uuid_bytes = bytes.fromhex(uuid_str)[::-1]  # Reverse for little-endian
+                    raw_data.append(len(data) + 3)  # Length
+                    raw_data.append(0x16)  # AD Type: Service Data - 16-bit UUID
+                    raw_data.extend(uuid_bytes)
+                    raw_data.extend(data)
+                else:
+                    # Log warning for unsupported UUID formats
+                    logger.debug("Skipping service data for unsupported UUID format (128-bit): %s", uuid_str)
+            
+            # Add service UUIDs if present (AD Type 0x03 for complete 16-bit UUIDs)
+            service_uuids = advertisement.get("service_uuids", [])
+            if service_uuids:
+                # Group 16-bit UUIDs (represented as 4-character hex strings)
+                uuid_16_list = [u for u in service_uuids if len(u) == 4]
+                if uuid_16_list:
+                    uuid_bytes = bytearray()
+                    for uuid_str in uuid_16_list:
+                        # Convert UUID to 16-bit little-endian
+                        uuid_bytes.extend(bytes.fromhex(uuid_str)[::-1])
+                    if uuid_bytes:
+                        raw_data.append(len(uuid_bytes) + 1)
+                        raw_data.append(0x03)  # Complete list of 16-bit UUIDs
+                        raw_data.extend(uuid_bytes)
+                
+                # Log warning for unsupported UUID formats
+                unsupported_uuids = [u for u in service_uuids if len(u) != 4]
+                if unsupported_uuids:
+                    logger.debug("Skipping unsupported UUID formats (128-bit): %s", unsupported_uuids)
+            
+            # Create raw advertisement message
+            raw_adv = BluetoothLERawAdvertisement(
+                address=address,
+                rssi=rssi,
+                address_type=address_type,
+                data=bytes(raw_data),
+            )
+            
+            # Send as a batch (even though it's just one advertisement)
+            bluetooth_response = BluetoothLERawAdvertisementsResponse(
+                advertisements=[raw_adv]
             )
             self._send_messages([bluetooth_response])
         except Exception as exc:  # pragma: no cover - defensive
@@ -323,4 +457,7 @@ __all__ = [
     "ESPHomeAPIServer",
     "ESPHomeAPIProtocol",
     "BLUETOOTH_PROXY_FEATURE_PASSIVE_SCAN",
+    "BLUETOOTH_PROXY_FEATURE_RAW_ADVERTISEMENTS",
+    "BLUETOOTH_PROXY_FEATURE_STATE_AND_MODE",
+    "BLUETOOTH_PROXY_FEATURES",
 ]
