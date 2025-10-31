@@ -196,11 +196,15 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
             return
 
         try:
+            name = advertisement.get("name", b"")
+            if isinstance(name, str):
+                name = name.encode()
+            
             bluetooth_response = BluetoothLEAdvertisementResponse(
                 address=int(advertisement["address"].replace(":", ""), 16),
                 rssi=int(advertisement.get("rssi", 0)),
                 address_type=1 if advertisement.get("address_type") == "random" else 0,
-                name=advertisement.get("name", ""),
+                name=name,
                 service_uuids=advertisement.get("service_uuids", []),
                 manufacturer_data=[
                     (int(company_id), bytes.fromhex(data) if isinstance(data, str) else data)
