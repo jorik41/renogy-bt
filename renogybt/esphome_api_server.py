@@ -139,9 +139,9 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
             responses.append(
                 HelloResponse(
                     api_version_major=1,
-                    api_version_minor=5,  # Versions <= 1.5 predate Noise encryption
+                    api_version_minor=10,
                     name=self.name,
-                    server_info=f"renogybt-proxy/{self.version} (no-encryption)",
+                    server_info=f"renogybt-proxy/{self.version}",
                 )
             )
         elif isinstance(message, AuthenticationRequest):
