@@ -54,6 +54,9 @@ BLUETOOTH_PROXY_FEATURES = (
     | BLUETOOTH_PROXY_FEATURE_STATE_AND_MODE
 )
 
+# Connection limits - we don't support active connections
+BLUETOOTH_PROXY_MAX_CONNECTIONS = 0
+
 PROTO_TO_MESSAGE_TYPE = {v: k for k, v in MESSAGE_TYPE_TO_PROTO.items()}
 
 logger = logging.getLogger(__name__)
@@ -230,11 +233,12 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
         elif isinstance(message, SubscribeBluetoothConnectionsFreeRequest):
             logger.info("ESPHome client subscribed to connections free updates")
             self._subscribed_to_connections_free = True
-            # Send initial connections free response (0 connections available since we don't support connections)
+            # Send initial connections free response
+            # We don't support active connections, so report 0 free/limit
             responses.append(
                 BluetoothConnectionsFreeResponse(
-                    free=0,
-                    limit=0,
+                    free=BLUETOOTH_PROXY_MAX_CONNECTIONS,
+                    limit=BLUETOOTH_PROXY_MAX_CONNECTIONS,
                 )
             )
         elif isinstance(message, BluetoothScannerSetModeRequest):
@@ -297,35 +301,41 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
                 raw_data.append((company_id_int >> 8) & 0xFF)
                 raw_data.extend(data)
             
-            # Add service data if present (AD Type 0x16)
+            # Add service data if present (AD Type 0x16 for 16-bit UUIDs)
             service_data = advertisement.get("service_data", {})
             for uuid_str, data in service_data.items():
                 if isinstance(data, str):
                     data = bytes.fromhex(data)
-                # For 16-bit UUIDs
+                # For 16-bit UUIDs (4-character hex strings)
                 if len(uuid_str) == 4:
                     uuid_bytes = bytes.fromhex(uuid_str)[::-1]  # Reverse for little-endian
                     raw_data.append(len(data) + 3)  # Length
                     raw_data.append(0x16)  # AD Type: Service Data - 16-bit UUID
                     raw_data.extend(uuid_bytes)
                     raw_data.extend(data)
-                # For 128-bit UUIDs, we'd need different handling
+                else:
+                    # Log warning for unsupported UUID formats
+                    logger.debug("Skipping service data for unsupported UUID format (128-bit): %s", uuid_str)
             
             # Add service UUIDs if present (AD Type 0x03 for complete 16-bit UUIDs)
             service_uuids = advertisement.get("service_uuids", [])
             if service_uuids:
-                # Group 16-bit UUIDs
-                uuid_16_list = [u for u in service_uuids if len(u) <= 8]
+                # Group 16-bit UUIDs (represented as 4-character hex strings)
+                uuid_16_list = [u for u in service_uuids if len(u) == 4]
                 if uuid_16_list:
                     uuid_bytes = bytearray()
                     for uuid_str in uuid_16_list:
-                        # Convert UUID to 16-bit if possible
-                        if len(uuid_str) == 4:
-                            uuid_bytes.extend(bytes.fromhex(uuid_str)[::-1])
+                        # Convert UUID to 16-bit little-endian
+                        uuid_bytes.extend(bytes.fromhex(uuid_str)[::-1])
                     if uuid_bytes:
                         raw_data.append(len(uuid_bytes) + 1)
                         raw_data.append(0x03)  # Complete list of 16-bit UUIDs
                         raw_data.extend(uuid_bytes)
+                
+                # Log warning for unsupported UUID formats
+                unsupported_uuids = [u for u in service_uuids if len(u) != 4]
+                if unsupported_uuids:
+                    logger.debug("Skipping unsupported UUID formats (128-bit): %s", unsupported_uuids)
             
             # Create raw advertisement message
             raw_adv = BluetoothLERawAdvertisement(
