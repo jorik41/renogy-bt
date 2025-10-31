@@ -54,6 +54,13 @@ If automatic discovery doesn't work, you can manually add the proxy:
 The proxy keeps the Renogy BLE client running alongside the ESPHome Bluetooth
 proxy so a single adapter can forward advertisements and read battery data.
 
+**Compatibility Note:**
+
+The proxy uses the modern ESPHome Bluetooth proxy protocol (without legacy
+version fields) to ensure compatibility with current Home Assistant versions.
+If you're upgrading from an older version, Home Assistant should automatically
+recognize the proxy as a Bluetooth scanner after the update.
+
 **How to get mac address?**
 
 The library will automatically list possible compatible devices discovered nearby, just run `example.py`. You can alternatively use apps like [BLE Scanner](https://play.google.com/store/apps/details?id=com.macdom.ble.blescanner).
