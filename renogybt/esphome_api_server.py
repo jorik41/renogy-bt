@@ -358,11 +358,21 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
                 data=bytes(raw_data),
             )
             
+            # Send legacy advertisement response for backwards compatibility
+            legacy_adv = BluetoothLEAdvertisementResponse(
+                address=address,
+                rssi=rssi,
+                address_type=address_type,
+                name=name_value,
+                service_uuids=advertisement.get("service_uuids", []),
+            )
+
             # Send as a batch (even though it's just one advertisement)
-            bluetooth_response = BluetoothLERawAdvertisementsResponse(
+            raw_response = BluetoothLERawAdvertisementsResponse(
                 advertisements=[raw_adv]
             )
-            self._send_messages([bluetooth_response])
+
+            self._send_messages([legacy_adv, raw_response])
         except Exception as exc:  # pragma: no cover - defensive
             logger.error("Failed to serialise BLE advertisement: %s", exc, exc_info=True)
 
