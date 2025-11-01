@@ -46,6 +46,8 @@ BLUETOOTH_PROXY_FEATURE_CACHE_CLEARING = 1 << 4
 BLUETOOTH_PROXY_FEATURE_RAW_ADVERTISEMENTS = 1 << 5
 BLUETOOTH_PROXY_FEATURE_STATE_AND_MODE = 1 << 6
 
+PROJECT_NAME = "renogybt.bluetooth_proxy"
+
 # We support passive scan, raw advertisements, and state/mode reporting
 # but not active connections, caching, pairing, or cache clearing
 BLUETOOTH_PROXY_FEATURES = (
@@ -193,7 +195,7 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
                     model="ESPHome Bluetooth Proxy",
                     manufacturer="ESPHome",
                     has_deep_sleep=False,
-                    project_name="renogybt",
+                    project_name=PROJECT_NAME,
                     project_version=self.version,
                     webserver_port=0,
                     bluetooth_proxy_feature_flags=BLUETOOTH_PROXY_FEATURES,

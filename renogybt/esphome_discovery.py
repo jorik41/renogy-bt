@@ -9,6 +9,8 @@ from typing import Optional
 from zeroconf import IPVersion
 from zeroconf.asyncio import AsyncServiceInfo, AsyncZeroconf
 
+from .esphome_api_server import PROJECT_NAME
+
 logger = logging.getLogger(__name__)
 
 
@@ -46,7 +48,7 @@ class ESPHomeDiscovery:
             "bluetooth_proxy": "true",
             "bluetooth_proxy_version": "5",
             "bluetooth_proxy_feature_flags": "97",
-            "project_name": "renogybt",
+            "project_name": PROJECT_NAME,
             "project_version": self.version,
         }
 
