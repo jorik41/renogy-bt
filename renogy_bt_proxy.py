@@ -119,20 +119,40 @@ def _create_client(config: configparser.ConfigParser, data_logger: DataLogger):
     raise ValueError(f"Unsupported device type '{device_type}'")
 
 
+def _extract_adv_flags(advertisement: AdvertisementData) -> Optional[int]:
+    """Attempt to derive the Flags AD value from platform-specific metadata."""
+    platform_data = getattr(advertisement, "platform_data", ())
+    if not platform_data or len(platform_data) < 2:
+        return None
+    props = platform_data[1]
+    if not isinstance(props, dict):
+        return None
+    adv_data = props.get("AdvertisingData") or {}
+    if isinstance(adv_data, dict):
+        flags = adv_data.get(0x01)
+        if isinstance(flags, (bytes, bytearray)) and flags:
+            return flags[0]
+    return None
+
+
 def _ble_packet_to_dict(device: BLEDevice, advertisement: AdvertisementData) -> Dict[str, object]:
     """Translate bleak advertisement structures to ESPHome payload format."""
+    manufacturer_data = {
+        str(k): bytes(v) for k, v in (advertisement.manufacturer_data or {}).items()
+    }
+    service_data = {
+        k: bytes(v) for k, v in (advertisement.service_data or {}).items()
+    }
     return {
         "address": device.address,
         "rssi": advertisement.rssi,
         "address_type": "random" if getattr(device, "address_type", "public") == "random" else "public",
-        "name": (advertisement.local_name or "").encode(),
-        "manufacturer_data": {
-            str(k): bytes(v) for k, v in (advertisement.manufacturer_data or {}).items()
-        },
-        "service_data": {
-            k: bytes(v) for k, v in (advertisement.service_data or {}).items()
-        },
+        "name": advertisement.local_name or "",
+        "manufacturer_data": manufacturer_data,
+        "service_data": service_data,
         "service_uuids": list(advertisement.service_uuids or []),
+        "tx_power": advertisement.tx_power,
+        "flags": _extract_adv_flags(advertisement),
     }
 
 
@@ -187,10 +207,12 @@ async def run_proxy(config_path: Path) -> None:
             "address": proxy_mac,
             "rssi": -40,
             "address_type": "public",
-            "name": b"renogy-bt-proxy",
+            "name": "renogy-bt-proxy",
             "manufacturer_data": {},
             "service_data": {},
             "service_uuids": [],
+            "tx_power": None,
+            "flags": 0x06,
         }
         try:
             callback(test_payload)

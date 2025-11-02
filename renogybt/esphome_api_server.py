@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Callable, List, Optional, Type
+from typing import Callable, Dict, List, Optional, Type
 
 from aioesphomeapi._frame_helper.packets import make_plain_text_packets
 from aioesphomeapi.api_pb2 import (  # type: ignore[attr-defined]
@@ -285,91 +285,158 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
             return
 
         try:
-            # Convert the advertisement to raw format
             address = int(advertisement["address"].replace(":", ""), 16)
             rssi = int(advertisement.get("rssi", 0))
             address_type = 1 if advertisement.get("address_type") == "random" else 0
-            
-            # Build raw BLE advertisement data
-            # This should include the complete advertisement packet data
-            # For now, we'll create a minimal valid packet
-            raw_data = bytearray()
-            
-            # Add name if present (AD Type 0x09 = Complete Local Name)
-            name_value = advertisement.get("name", b"")
-            if isinstance(name_value, str):
-                name_value = name_value.encode()
-            if name_value:
-                raw_data.append(len(name_value) + 1)  # Length
-                raw_data.append(0x09)  # AD Type: Complete Local Name
-                raw_data.extend(name_value)
-            
-            # Add manufacturer data if present (AD Type 0xFF)
-            manufacturer_data = advertisement.get("manufacturer_data", {})
-            for company_id, data in manufacturer_data.items():
-                company_id_int = int(company_id)
-                if isinstance(data, str):
-                    data = bytes.fromhex(data)
-                raw_data.append(len(data) + 3)  # Length (data + 1 type + 2 company ID)
-                raw_data.append(0xFF)  # AD Type: Manufacturer Specific Data
-                raw_data.append(company_id_int & 0xFF)  # Company ID (little-endian)
-                raw_data.append((company_id_int >> 8) & 0xFF)
-                raw_data.extend(data)
-            
-            # Add service data if present (AD Type 0x16 for 16-bit UUIDs)
-            service_data = advertisement.get("service_data", {})
-            for uuid_str, data in service_data.items():
-                if isinstance(data, str):
-                    data = bytes.fromhex(data)
-                # For 16-bit UUIDs (4-character hex strings)
-                if len(uuid_str) == 4:
-                    uuid_bytes = bytes.fromhex(uuid_str)[::-1]  # Reverse for little-endian
-                    raw_data.append(len(data) + 3)  # Length
-                    raw_data.append(0x16)  # AD Type: Service Data - 16-bit UUID
-                    raw_data.extend(uuid_bytes)
-                    raw_data.extend(data)
+            manufacturer_data = advertisement.get("manufacturer_data", {}) or {}
+            service_data = advertisement.get("service_data", {}) or {}
+            service_uuids = advertisement.get("service_uuids", []) or []
+            name_field = advertisement.get("name", "") or ""
+            if isinstance(name_field, (bytes, bytearray)):
+                name_bytes = bytes(name_field)
+                name_str = name_bytes.decode("utf-8", errors="ignore")
+            else:
+                name_str = str(name_field)
+                name_bytes = name_str.encode("utf-8", errors="ignore")
+
+            normalized_manufacturer: Dict[int, bytes] = {}
+            for key, value in manufacturer_data.items():
+                try:
+                    if isinstance(key, (bytes, bytearray)):
+                        company_int = int.from_bytes(key, "little")
+                    else:
+                        company_int = int(key)
+                except (TypeError, ValueError):
+                    logger.debug("Skipping manufacturer key with unexpected type: %r", key)
+                    continue
+                if isinstance(value, str):
+                    normalized_manufacturer[company_int] = bytes.fromhex(value)
+                elif isinstance(value, (bytes, bytearray)):
+                    normalized_manufacturer[company_int] = bytes(value)
                 else:
-                    # Log warning for unsupported UUID formats
-                    logger.debug("Skipping service data for unsupported UUID format (128-bit): %s", uuid_str)
-            
-            # Add service UUIDs if present (AD Type 0x03 for complete 16-bit UUIDs)
-            service_uuids = advertisement.get("service_uuids", [])
-            if service_uuids:
-                # Group 16-bit UUIDs (represented as 4-character hex strings)
-                uuid_16_list = [u for u in service_uuids if len(u) == 4]
-                if uuid_16_list:
-                    uuid_bytes = bytearray()
-                    for uuid_str in uuid_16_list:
-                        # Convert UUID to 16-bit little-endian
-                        uuid_bytes.extend(bytes.fromhex(uuid_str)[::-1])
-                    if uuid_bytes:
-                        raw_data.append(len(uuid_bytes) + 1)
-                        raw_data.append(0x03)  # Complete list of 16-bit UUIDs
-                        raw_data.extend(uuid_bytes)
-                
-                # Log warning for unsupported UUID formats
-                unsupported_uuids = [u for u in service_uuids if len(u) != 4]
-                if unsupported_uuids:
-                    logger.debug("Skipping unsupported UUID formats (128-bit): %s", unsupported_uuids)
-            
-            # Create raw advertisement message
+                    normalized_manufacturer[company_int] = bytes(value or b"")
+            manufacturer_data = normalized_manufacturer
+
+            normalized_service: Dict[str, bytes] = {}
+            for key, value in service_data.items():
+                if isinstance(value, str):
+                    normalized_service[key] = bytes.fromhex(value)
+                elif isinstance(value, (bytes, bytearray)):
+                    normalized_service[key] = bytes(value)
+                else:
+                    normalized_service[key] = bytes(value or b"")
+            service_data = normalized_service
+
+            raw_segments: List[bytes] = []
+
+            def add_segment(ad_type: int, payload: bytes) -> None:
+                if not payload:
+                    return
+                length = len(payload) + 1
+                if length > 255:
+                    logger.debug(
+                        "Skipping AD type %s due to payload length %s", ad_type, length
+                    )
+                    return
+                raw_segments.append(bytes((length, ad_type)) + payload)
+
+            flags = advertisement.get("flags")
+            if isinstance(flags, int):
+                add_segment(0x01, bytes([flags & 0xFF]))
+            else:
+                add_segment(0x01, b"\x06")
+
+            if name_bytes:
+                add_segment(0x09, name_bytes)
+
+            for company_id, data_bytes in manufacturer_data.items():
+                try:
+                    company_int = int(company_id)
+                except (TypeError, ValueError):
+                    logger.debug(
+                        "Skipping manufacturer data with unexpected key %r", company_id
+                    )
+                    continue
+                payload = bytes(
+                    (company_int & 0xFF, (company_int >> 8) & 0xFF)
+                ) + data_bytes
+                add_segment(0xFF, payload)
+
+            for uuid_str, data_bytes in service_data.items():
+                normalized_uuid = uuid_str.replace("-", "")
+                if len(normalized_uuid) == 4:
+                    add_segment(
+                        0x16, bytes.fromhex(normalized_uuid)[::-1] + data_bytes
+                    )
+                elif len(normalized_uuid) == 8:
+                    add_segment(
+                        0x20, bytes.fromhex(normalized_uuid)[::-1] + data_bytes
+                    )
+                elif len(normalized_uuid) == 32:
+                    add_segment(
+                        0x21, bytes.fromhex(normalized_uuid)[::-1] + data_bytes
+                    )
+                else:
+                    logger.debug(
+                        "Skipping service data for unsupported UUID %s", uuid_str
+                    )
+
+            uuid_16_bytes = []
+            uuid_32_bytes = []
+            uuid_128_bytes = []
+            for uuid_str in service_uuids:
+                normalized_uuid = uuid_str.replace("-", "")
+                if len(normalized_uuid) == 4:
+                    uuid_16_bytes.append(bytes.fromhex(normalized_uuid)[::-1])
+                elif len(normalized_uuid) == 8:
+                    uuid_32_bytes.append(bytes.fromhex(normalized_uuid)[::-1])
+                elif len(normalized_uuid) == 32:
+                    uuid_128_bytes.append(bytes.fromhex(normalized_uuid)[::-1])
+                else:
+                    logger.debug(
+                        "Skipping service UUID with unsupported format: %s", uuid_str
+                    )
+            if uuid_16_bytes:
+                add_segment(0x03, b"".join(uuid_16_bytes))
+            if uuid_32_bytes:
+                add_segment(0x05, b"".join(uuid_32_bytes))
+            if uuid_128_bytes:
+                add_segment(0x07, b"".join(uuid_128_bytes))
+
+            tx_power = advertisement.get("tx_power")
+            if isinstance(tx_power, int):
+                add_segment(0x0A, bytes([tx_power & 0xFF]))
+
             raw_adv = BluetoothLERawAdvertisement(
                 address=address,
                 rssi=rssi,
                 address_type=address_type,
-                data=bytes(raw_data),
+                data=b"".join(raw_segments),
             )
-            
-            # Send legacy advertisement response for backwards compatibility
+
             legacy_adv = BluetoothLEAdvertisementResponse(
                 address=address,
                 rssi=rssi,
                 address_type=address_type,
-                name=name_value,
-                service_uuids=advertisement.get("service_uuids", []),
+                name=name_bytes,
+                service_uuids=list(service_uuids),
             )
-
-            # Send as a batch (even though it's just one advertisement)
+            for uuid_str, data_bytes in service_data.items():
+                entry = legacy_adv.service_data.add()
+                entry.uuid = uuid_str
+                entry.data = data_bytes
+            for company_id, data_bytes in manufacturer_data.items():
+                try:
+                    company_int = int(company_id)
+                except (TypeError, ValueError):
+                    logger.debug(
+                        "Skipping manufacturer data entry with unexpected key %r",
+                        company_id,
+                    )
+                    continue
+                entry = legacy_adv.manufacturer_data.add()
+                entry.uuid = str(company_int)
+                entry.data = data_bytes
             raw_response = BluetoothLERawAdvertisementsResponse(
                 advertisements=[raw_adv]
             )

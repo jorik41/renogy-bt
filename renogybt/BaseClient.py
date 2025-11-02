@@ -176,6 +176,10 @@ class BaseClient:
         if self.device_id == None or len(self.sections) == 0:
             return logging.error("BaseClient cannot be used directly")
 
+        if not self.ble_manager:
+            logging.debug("Skipping read_section; BLE manager unavailable")
+            return
+
         self.read_timeout = self.loop.call_later(READ_TIMEOUT, self.on_read_timeout)
         request = self.create_generic_read_request(self.device_id, 3, self.sections[index]['register'], self.sections[index]['words']) 
         await self.ble_manager.characteristic_write_value(request)

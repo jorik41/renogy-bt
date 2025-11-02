@@ -36,7 +36,25 @@ class BLEManager:
                     adapter=self.adapter,
                 )
                 logging.info("Devices found: %s", len(self.discovered_devices))
-                break
+                for dev in self.discovered_devices:
+                    if dev.address is not None and (
+                        dev.address.upper() == mac_address
+                        or (dev.name and dev.name.strip() == self.device_alias)
+                    ):
+                        logging.info(f"Found matching device {dev.name} => {dev.address}")
+                        self.device = dev
+                        break
+                if self.device:
+                    break
+                logging.warning(
+                    "Target device %s (%s) not discovered on attempt %s",
+                    self.device_alias,
+                    mac_address,
+                    attempt,
+                )
+                if attempt < DISCOVER_RETRIES:
+                    await asyncio.sleep(DISCOVER_DELAY)
+                continue
             except BleakError as exc:
                 logging.error("Discovery failed: %s", exc)
                 if attempt < DISCOVER_RETRIES:
@@ -45,13 +63,17 @@ class BLEManager:
                     self.connect_fail_callback(exc)
                     return
 
-        for dev in self.discovered_devices:
-            if dev.address is not None and (
-                dev.address.upper() == mac_address
-                or (dev.name and dev.name.strip() == self.device_alias)
-            ):
-                logging.info(f"Found matching device {dev.name} => {dev.address}")
-                self.device = dev
+        if not self.device:
+            logging.error(
+                "Discovery attempts exhausted without finding %s (%s)",
+                self.device_alias,
+                mac_address,
+            )
+            self.connect_fail_callback(
+                RuntimeError(
+                    f"BLE discovery failed for {self.device_alias} ({self.mac_address})"
+                )
+            )
 
     async def connect(self):
         if not self.device:
