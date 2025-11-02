@@ -29,6 +29,7 @@ class BaseClient:
         self.read_timeout = None
         self.loop: Optional[asyncio.AbstractEventLoop] = None
         self.future: Optional[asyncio.Future] = None
+        self.ble_activity_callback: Optional[Callable[[bool, str], None]] = None
 
         device_id_str = (self.config['device'].get('device_id') or "").strip()
         if not device_id_str:
@@ -91,6 +92,17 @@ class BaseClient:
                     self.loop = None
                     self.future = None
 
+    def set_ble_activity_callback(self, callback: Optional[Callable[[bool, str], None]]):
+        self.ble_activity_callback = callback
+
+    def _notify_ble_activity(self, active: bool, stage: str) -> None:
+        if not self.ble_activity_callback:
+            return
+        try:
+            self.ble_activity_callback(active, stage)
+        except Exception:
+            logging.exception("BLE activity callback failed during stage %s", stage)
+
     async def connect(self):
         self.ble_manager = BLEManager(
             mac_address=self.config['device']['mac_addr'],
@@ -102,7 +114,11 @@ class BaseClient:
             write_service_uuid=WRITE_SERVICE_UUID,
             adapter=self.config['device'].get('adapter'),
         )
-        await self.ble_manager.discover()
+        self._notify_ble_activity(True, "discover")
+        try:
+            await self.ble_manager.discover()
+        finally:
+            self._notify_ble_activity(False, "discover")
 
         if not self.ble_manager.device:
             logging.error(f"Device not found: {self.config['device']['alias']} => {self.config['device']['mac_addr']}, please check the details provided.")
@@ -111,7 +127,11 @@ class BaseClient:
                     logging.info(f"Possible device found! ====> {dev.name} > [{dev.address}]")
             self.stop()
         else:
-            await self.ble_manager.connect()
+            self._notify_ble_activity(True, "connect")
+            try:
+                await self.ble_manager.connect()
+            finally:
+                self._notify_ble_activity(False, "connect")
             if self.ble_manager.client and self.ble_manager.client.is_connected: await self.read_section()
 
     async def disconnect(self):

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import configparser
+import contextlib
 import logging
 import re
 import signal
@@ -32,6 +33,107 @@ logger = logging.getLogger(__name__)
 
 # Skip forwarding advertisements that originate from the local adapter
 ADAPTER_NAME_PATTERN = re.compile(r"^hci\d+\s+\([0-9A-Fa-f:]+\)$")
+
+
+class ScannerSupervisor:
+    """Manage BLE scanner runtime, pausing during Renogy operations and applying duty cycle."""
+
+    def __init__(
+        self,
+        scanner: BleakScanner,
+        *,
+        loop: asyncio.AbstractEventLoop,
+        active_time: float = 0.0,
+        idle_time: float = 0.0,
+    ) -> None:
+        self._scanner = scanner
+        self._loop = loop
+        self._active_time = max(0.0, active_time)
+        self._idle_time = max(0.0, idle_time)
+        self._lock = asyncio.Lock()
+        self._running = False
+        self._pause_tokens = 0
+        self._duty_task: Optional[asyncio.Task] = None
+        self._shutdown = False
+
+    @property
+    def duty_cycle_enabled(self) -> bool:
+        return self._active_time > 0 and self._idle_time > 0
+
+    async def start(self) -> None:
+        await self._ensure_running("initial start")
+        if self.duty_cycle_enabled and not self._duty_task:
+            self._duty_task = asyncio.create_task(self._run_duty_cycle())
+
+    async def pause(self, reason: str) -> None:
+        async with self._lock:
+            self._pause_tokens += 1
+            if self._pause_tokens == 1:
+                await self._set_running_locked(False, f"pause:{reason}")
+
+    async def resume(self, reason: str) -> None:
+        async with self._lock:
+            if self._pause_tokens == 0:
+                return
+            self._pause_tokens -= 1
+            if self._pause_tokens == 0:
+                await self._set_running_locked(True, f"resume:{reason}")
+
+    def pause_from_thread(self, reason: str) -> None:
+        future = asyncio.run_coroutine_threadsafe(self.pause(reason), self._loop)
+        with contextlib.suppress(Exception):
+            future.result(timeout=5)
+
+    def resume_from_thread(self, reason: str) -> None:
+        future = asyncio.run_coroutine_threadsafe(self.resume(reason), self._loop)
+        with contextlib.suppress(Exception):
+            future.result(timeout=5)
+
+    async def shutdown(self) -> None:
+        self._shutdown = True
+        if self._duty_task:
+            self._duty_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._duty_task
+            self._duty_task = None
+        async with self._lock:
+            await self._set_running_locked(False, "shutdown")
+
+    async def _ensure_running(self, reason: str) -> None:
+        async with self._lock:
+            await self._set_running_locked(True, reason)
+
+    async def _set_running(self, target: bool, reason: str) -> None:
+        async with self._lock:
+            await self._set_running_locked(target, reason)
+
+    async def _set_running_locked(self, target: bool, reason: str) -> None:
+        if target:
+            if self._running or self._shutdown or self._pause_tokens > 0:
+                return
+            await self._scanner.start()
+            self._running = True
+            logger.debug("BLE scanner started (%s)", reason)
+        else:
+            if not self._running:
+                return
+            await self._scanner.stop()
+            self._running = False
+            logger.debug("BLE scanner stopped (%s)", reason)
+
+    async def _run_duty_cycle(self) -> None:
+        try:
+            while not self._shutdown:
+                await asyncio.sleep(self._active_time)
+                if self._shutdown:
+                    break
+                await self._set_running(False, "duty-cycle pause")
+                await asyncio.sleep(self._idle_time)
+                if self._shutdown:
+                    break
+                await self._ensure_running("duty-cycle resume")
+        except asyncio.CancelledError:
+            pass
 
 
 def _format_mac(raw: int) -> str:
@@ -235,16 +337,69 @@ async def run_proxy(config_path: Path) -> None:
         payload = _ble_packet_to_dict(device, advertisement)
         send_advertisement_callback(payload)
 
-    scanner = BleakScanner(detection_callback=on_ble_advertisement, adapter=adapter)
-
     loop = asyncio.get_running_loop()
     stop_event = asyncio.Event()
+
+    scan_mode = config.get(proxy_section, "scan_mode", fallback="").strip().lower()
+
+    def _get_scan_float(option: str, fallback: float) -> float:
+        try:
+            return config.getfloat(proxy_section, option, fallback=fallback)
+        except ValueError:
+            logger.warning(
+                "Invalid value for %s.%s; falling back to %.2f",
+                proxy_section,
+                option,
+                fallback,
+            )
+            return fallback
+
+    scan_active = _get_scan_float("scan_active_seconds", 0.0)
+    scan_idle = _get_scan_float("scan_idle_seconds", 0.0)
+
+    pause_during_renogy = config.getboolean(
+        proxy_section,
+        "pause_during_renogy",
+        fallback=False,
+    )
+
+    scanner_kwargs = {
+        "detection_callback": on_ble_advertisement,
+        "adapter": adapter,
+    }
+    if scan_mode in {"active", "passive"}:
+        scanner_kwargs["scanning_mode"] = scan_mode
+    try:
+        scanner = BleakScanner(**scanner_kwargs)
+    except TypeError:
+        # Older versions of bleak may not accept scanning_mode
+        scanner_kwargs.pop("scanning_mode", None)
+        scanner = BleakScanner(**scanner_kwargs)
+
+    use_supervisor = pause_during_renogy or (scan_active > 0 and scan_idle > 0)
+    scanner_supervisor: Optional[ScannerSupervisor] = None
+    if use_supervisor:
+        scanner_supervisor = ScannerSupervisor(
+            scanner,
+            loop=loop,
+            active_time=scan_active,
+            idle_time=scan_idle,
+        )
 
     async def start_battery_client() -> None:
         nonlocal battery_client, battery_future
         if not with_renogy_client:
             return
         battery_client = _create_client(config, data_logger)
+
+        if pause_during_renogy and scanner_supervisor:
+            def handle_ble_activity(request_pause: bool, stage: str) -> None:
+                if request_pause:
+                    scanner_supervisor.pause_from_thread(stage)
+                else:
+                    scanner_supervisor.resume_from_thread(stage)
+
+            battery_client.set_ble_activity_callback(handle_ble_activity)
 
         def run_client() -> None:
             try:
@@ -287,19 +442,34 @@ async def run_proxy(config_path: Path) -> None:
     try:
         await api_server.start()
         await discovery.start()
-        await scanner.start()
+        if scanner_supervisor:
+            await scanner_supervisor.start()
+        else:
+            await scanner.start()
         logger.info(
-            "ESPHome proxy running on adapter %s (port %d, mac %s, Renogy client: %s)",
+            (
+                "ESPHome proxy running on adapter %s (port %d, mac %s, "
+                "Renogy client: %s, scan mode: %s, duty cycle: %.1fs/%.1fs, "
+                "autopause: %s)"
+            ),
             adapter,
             native_port,
             proxy_mac,
             "enabled" if with_renogy_client else "disabled",
+            scanner_kwargs.get("scanning_mode", "default"),
+            scan_active,
+            scan_idle,
+            "on" if pause_during_renogy else "off",
         )
         await stop_event.wait()
     except asyncio.CancelledError:
         raise
     finally:
-        await scanner.stop()
+        if scanner_supervisor:
+            await scanner_supervisor.shutdown()
+        else:
+            with contextlib.suppress(Exception):
+                await scanner.stop()
         await discovery.stop()
         await api_server.stop()
         await stop_battery_client()

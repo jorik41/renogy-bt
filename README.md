@@ -53,6 +53,19 @@ If automatic discovery doesn't work, you can manually add the proxy:
 
 The proxy keeps the Renogy BLE client running alongside the ESPHome Bluetooth
 proxy so a single adapter can forward advertisements and read battery data.
+On resource-constrained boards (like the Raspberry Pi Zero 2 W) the proxy now
+automatically pauses BLE scanning while the Renogy client performs discovery or
+connects, freeing up airtime for Wi-Fi. You can further tune behaviour via the
+`[home_assistant_proxy]` settings in `config.ini`:
+
+- `scan_mode = passive` (optional) keeps the host from issuing active scan
+  requests, which cuts down on radio chatter if you choose to enable it.
+- `scan_active_seconds` / `scan_idle_seconds` let you apply a light duty cycle
+  to scanning if your Wi-Fi link still struggles. Leave the options commented
+  out for continuous scanning (the default behaviour).
+- `pause_during_renogy = true` (optional) temporarily pauses the BLE scanner
+  while the Renogy client performs discovery or connects, giving Wi-Fi
+  every chance to win short contention windows.
 
 **Compatibility Note:**
 
