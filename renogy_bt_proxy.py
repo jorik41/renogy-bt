@@ -89,6 +89,11 @@ class ScannerSupervisor:
         with contextlib.suppress(Exception):
             future.result(timeout=5)
 
+    def kick_from_thread(self, reason: str) -> None:
+        future = asyncio.run_coroutine_threadsafe(self._kick(reason), self._loop)
+        with contextlib.suppress(Exception):
+            future.result(timeout=5)
+
     async def shutdown(self) -> None:
         self._shutdown = True
         if self._duty_task:
@@ -120,6 +125,12 @@ class ScannerSupervisor:
             await self._scanner.stop()
             self._running = False
             logger.debug("BLE scanner stopped (%s)", reason)
+
+    async def _kick(self, reason: str) -> None:
+        async with self._lock:
+            # Force a stop/start cycle to ensure BlueZ keeps streaming advertisements.
+            await self._set_running_locked(False, f"kick-stop:{reason}")
+            await self._set_running_locked(True, f"kick-start:{reason}")
 
     async def _run_duty_cycle(self) -> None:
         try:
@@ -369,14 +380,21 @@ async def run_proxy(config_path: Path) -> None:
     }
     if scan_mode in {"active", "passive"}:
         scanner_kwargs["scanning_mode"] = scan_mode
+    # Allow duplicate advertisements so Home Assistant sees regular beacon updates.
+    bluez_filters = scanner_kwargs.get("bluez", {}) or {}
+    filters = dict(bluez_filters.get("filters") or {})
+    filters.setdefault("DuplicateData", True)
+    bluez_filters["filters"] = filters
+    scanner_kwargs["bluez"] = bluez_filters
     try:
         scanner = BleakScanner(**scanner_kwargs)
     except TypeError:
         # Older versions of bleak may not accept scanning_mode
         scanner_kwargs.pop("scanning_mode", None)
+        scanner_kwargs.pop("bluez", None)
         scanner = BleakScanner(**scanner_kwargs)
 
-    use_supervisor = pause_during_renogy or (scan_active > 0 and scan_idle > 0)
+    use_supervisor = with_renogy_client or pause_during_renogy or (scan_active > 0 and scan_idle > 0)
     scanner_supervisor: Optional[ScannerSupervisor] = None
     if use_supervisor:
         scanner_supervisor = ScannerSupervisor(
@@ -392,12 +410,16 @@ async def run_proxy(config_path: Path) -> None:
             return
         battery_client = _create_client(config, data_logger)
 
-        if pause_during_renogy and scanner_supervisor:
+        if scanner_supervisor:
             def handle_ble_activity(request_pause: bool, stage: str) -> None:
                 if request_pause:
-                    scanner_supervisor.pause_from_thread(stage)
+                    if pause_during_renogy:
+                        scanner_supervisor.pause_from_thread(stage)
                 else:
-                    scanner_supervisor.resume_from_thread(stage)
+                    if pause_during_renogy:
+                        scanner_supervisor.resume_from_thread(stage)
+                    else:
+                        scanner_supervisor.kick_from_thread(stage)
 
             battery_client.set_ble_activity_callback(handle_ble_activity)
 
