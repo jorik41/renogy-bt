@@ -4,6 +4,8 @@ import logging
 import traceback
 from typing import Callable, Iterable, List, Optional
 
+from bleak.exc import BleakError
+
 from .BLEManager import BLEManager
 from .Utils import bytes_to_int, crc16_modbus, int_to_bytes
 
@@ -30,6 +32,7 @@ class BaseClient:
         self.loop: Optional[asyncio.AbstractEventLoop] = None
         self.future: Optional[asyncio.Future] = None
         self.ble_activity_callback: Optional[Callable[[bool, str], None]] = None
+        self.last_error: Optional[str] = None
 
         device_id_str = (self.config['device'].get('device_id') or "").strip()
         if not device_id_str:
@@ -142,7 +145,9 @@ class BaseClient:
             self.future.set_result('DONE')
 
     async def on_data_received(self, response):
-        if self.read_timeout and not self.read_timeout.cancelled(): self.read_timeout.cancel()
+        if self.read_timeout and not self.read_timeout.cancelled():
+            self.read_timeout.cancel()
+        self._notify_ble_activity(False, "read")
         operation = bytes_to_int(response, 1, 1)
 
         if operation == READ_SUCCESS or operation == READ_ERROR:
@@ -181,9 +186,12 @@ class BaseClient:
         self.data['__client'] = self.__class__.__name__
         self.__safe_callback(self.on_data_callback, self.data)
         self.reset_device_data()
+        self.last_error = None
 
     def on_read_timeout(self):
         logging.error("on_read_timeout => Timed out! Please check your device_id!")
+        self._notify_ble_activity(False, "read-timeout")
+        self.last_error = "read_timeout"
         self.stop()
 
     async def check_polling(self):
@@ -202,7 +210,27 @@ class BaseClient:
 
         self.read_timeout = self.loop.call_later(READ_TIMEOUT, self.on_read_timeout)
         request = self.create_generic_read_request(self.device_id, 3, self.sections[index]['register'], self.sections[index]['words']) 
-        await self.ble_manager.characteristic_write_value(request)
+        reconnecting = False
+        if not self.ble_manager.client or not self.ble_manager.client.is_connected:
+            reconnecting = True
+            logging.info("BLE client disconnected; attempting reconnect")
+            self._notify_ble_activity(True, "reconnect")
+            try:
+                await self.ble_manager.connect()
+            finally:
+                self._notify_ble_activity(False, "reconnect")
+        if not self.ble_manager.client or not self.ble_manager.client.is_connected:
+            raise BleakError("Client is not connected")
+        self._notify_ble_activity(True, f"read:{self.sections[index]['register']}")
+        try:
+            await self.ble_manager.characteristic_write_value(request)
+        except BleakError as exc:
+            self._notify_ble_activity(False, "read-error")
+            logging.error("Failed to write characteristic during read_section: %s", exc)
+            raise
+        else:
+            if reconnecting:
+                logging.info("BLE client reconnected successfully")
 
     def create_generic_read_request(self, device_id, function, regAddr, readWrd):                             
         data = None                                
@@ -223,11 +251,15 @@ class BaseClient:
 
     def __on_error(self, error = None):
         logging.error(f"Exception occurred: {error}")
+        self._notify_ble_activity(False, "exception")
+        self.last_error = f"exception:{error}"
         self.__safe_callback(self.on_error_callback, error)
         self.stop()
 
     def __on_connect_fail(self, error):
         logging.error(f"Connection failed: {error}")
+        self._notify_ble_activity(False, "connect-fail")
+        self.last_error = f"connect_fail:{error}"
         self.__safe_callback(self.on_error_callback, error)
         self.stop()
 
@@ -239,6 +271,8 @@ class BaseClient:
             self.read_timeout.cancel()
         if not self.loop or self.loop.is_closed():
             return
+        if self.last_error is None:
+            self.last_error = "stopped"
         if self.loop.is_running():
             self.loop.call_soon_threadsafe(lambda: CREATE_TASK(self.disconnect()))
         else:

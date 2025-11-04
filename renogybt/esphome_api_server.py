@@ -108,6 +108,7 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
         self._subscribed_to_connections_free = False
 
     def data_received(self, data: bytes) -> None:
+        logger.debug("ESPHome API raw bytes received len=%d: %s", len(data), data[:20].hex())
         if self._buffer is None:
             self._buffer = data
             self._buffer_len = len(data)

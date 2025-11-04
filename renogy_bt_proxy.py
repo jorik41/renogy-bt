@@ -14,7 +14,11 @@ import uuid
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
+from dbus_fast import BusType, Variant
+from dbus_fast.aio import MessageBus
+
 from bleak import AdvertisementData, BLEDevice, BleakScanner
+from bleak.exc import BleakDBusError, BleakError
 
 from renogybt import (
     BatteryClient,
@@ -30,9 +34,43 @@ from renogybt import (
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 
 # Skip forwarding advertisements that originate from the local adapter
 ADAPTER_NAME_PATTERN = re.compile(r"^hci\d+\s+\([0-9A-Fa-f:]+\)$")
+
+
+def _is_in_progress_error(exc: Exception) -> bool:
+    """Return True if the exception indicates an in-progress BlueZ operation."""
+    if isinstance(exc, BleakDBusError):
+        if exc.dbus_error == "org.bluez.Error.InProgress":
+            return True
+        if exc.dbus_error == "org.bluez.Error.Failed" and "No discovery started" in str(
+            exc
+        ):
+            return True
+    message = str(exc)
+    return "InProgress" in message or "in progress" in message
+
+
+async def _power_cycle_adapter(adapter: str, delay: float = 1.0) -> None:
+    """Toggle the BlueZ adapter power to recover from stuck discovery."""
+    path = f"/org/bluez/{adapter}"
+    bus = MessageBus(bus_type=BusType.SYSTEM)
+    await bus.connect()
+    try:
+        introspection = await bus.introspect("org.bluez", path)
+        proxy = bus.get_proxy_object("org.bluez", path, introspection)
+        props = proxy.get_interface("org.freedesktop.DBus.Properties")
+        logger.warning("Power cycling BLE adapter %s to recover discovery", adapter)
+        with contextlib.suppress(Exception):
+            await props.call_set("org.bluez.Adapter1", "Discovering", Variant("b", False))
+        await props.call_set("org.bluez.Adapter1", "Powered", Variant("b", False))
+        await asyncio.sleep(delay)
+        await props.call_set("org.bluez.Adapter1", "Powered", Variant("b", True))
+        await asyncio.sleep(delay)
+    finally:
+        bus.disconnect()
 
 
 class ScannerSupervisor:
@@ -68,14 +106,25 @@ class ScannerSupervisor:
     async def pause(self, reason: str) -> None:
         async with self._lock:
             self._pause_tokens += 1
+            logger.debug(
+                "ScannerSupervisor pause (%s); tokens=%d", reason, self._pause_tokens
+            )
             if self._pause_tokens == 1:
                 await self._set_running_locked(False, f"pause:{reason}")
 
     async def resume(self, reason: str) -> None:
         async with self._lock:
             if self._pause_tokens == 0:
+                logger.debug(
+                    "ScannerSupervisor resume (%s) skipped; already resumed", reason
+                )
                 return
             self._pause_tokens -= 1
+            logger.debug(
+                "ScannerSupervisor resume (%s); tokens=%d",
+                reason,
+                self._pause_tokens,
+            )
             if self._pause_tokens == 0:
                 await self._set_running_locked(True, f"resume:{reason}")
 
@@ -115,20 +164,52 @@ class ScannerSupervisor:
     async def _set_running_locked(self, target: bool, reason: str) -> None:
         if target:
             if self._running or self._shutdown or self._pause_tokens > 0:
+                logger.debug(
+                    "ScannerSupervisor start skipped (%s); running=%s shutdown=%s tokens=%d",
+                    reason,
+                    self._running,
+                    self._shutdown,
+                    self._pause_tokens,
+                )
                 return
-            await self._scanner.start()
+            try:
+                await self._scanner.start()
+            except BleakError as exc:
+                if _is_in_progress_error(exc):
+                    logger.debug(
+                        "BLE scanner already running when starting (%s): %s",
+                        reason,
+                        exc,
+                    )
+                    self._running = True
+                    return
+                logger.error("Failed to start BLE scanner (%s): %s", reason, exc)
+                raise
             self._running = True
             logger.debug("BLE scanner started (%s)", reason)
         else:
             if not self._running:
+                logger.debug("ScannerSupervisor stop skipped (%s); already stopped", reason)
                 return
-            await self._scanner.stop()
+            try:
+                await self._scanner.stop()
+            except BleakError as exc:
+                if _is_in_progress_error(exc):
+                    logger.debug(
+                        "BLE scanner stop already in progress (%s): %s",
+                        reason,
+                        exc,
+                    )
+                else:
+                    logger.error("Failed to stop BLE scanner (%s): %s", reason, exc)
+                    raise
             self._running = False
             logger.debug("BLE scanner stopped (%s)", reason)
 
     async def _kick(self, reason: str) -> None:
         async with self._lock:
             # Force a stop/start cycle to ensure BlueZ keeps streaming advertisements.
+            logger.debug("ScannerSupervisor kick requested (%s)", reason)
             await self._set_running_locked(False, f"kick-stop:{reason}")
             await self._set_running_locked(True, f"kick-start:{reason}")
 
@@ -147,9 +228,116 @@ class ScannerSupervisor:
             pass
 
 
+class AirtimeScheduler:
+    """Coordinate BLE scanner airtime between Renogy operations and proxy scanning."""
+
+    def __init__(
+        self,
+        supervisor: Optional[ScannerSupervisor],
+        *,
+        loop: asyncio.AbstractEventLoop,
+        resume_window: float,
+        settle_time: float,
+    ) -> None:
+        self._supervisor = supervisor
+        self._loop = loop
+        self._resume_window = max(0.0, resume_window)
+        self._settle_time = max(0.0, settle_time)
+        self._resume_handle: Optional[asyncio.Handle] = None
+        self._window_handle: Optional[asyncio.Handle] = None
+        self._pending_reason: Optional[str] = None
+
+    def pause(self, reason: str) -> None:
+        if not self._supervisor:
+            return
+        logger.debug("AirtimeScheduler pause: %s", reason)
+
+        def _apply_pause() -> None:
+            # Do not cancel pending resume so outstanding tokens can drain.
+            self._cancel_handles(cancel_resume=False)
+            logger.debug("AirtimeScheduler pause applied: %s", reason)
+            self._supervisor.pause_from_thread(reason)
+
+        self._loop.call_soon_threadsafe(_apply_pause)
+
+    def resume_window(self, reason: str) -> None:
+        if not self._supervisor:
+            return
+        logger.debug(
+            "AirtimeScheduler resume_window start: %s (settle=%.3fs window=%.3fs)",
+            reason,
+            self._settle_time,
+            self._resume_window,
+        )
+        logger.debug("AirtimeScheduler dispatching resume scheduling: %s", reason)
+
+        def _schedule_resume() -> None:
+            self._cancel_handles(cancel_resume=False)
+            self._pending_reason = reason
+            if self._resume_handle:
+                logger.debug(
+                    "AirtimeScheduler resume already pending (reason=%s); keeping existing timer",
+                    self._pending_reason,
+                )
+                return
+            logger.debug("AirtimeScheduler scheduling resume: %s", reason)
+
+            def _do_resume() -> None:
+                pending_reason = self._pending_reason or reason
+                self._pending_reason = None
+                logger.debug("AirtimeScheduler resume executing: %s", pending_reason)
+                self._resume_handle = None
+                self._supervisor.resume_from_thread(pending_reason)
+                if self._resume_window > 0:
+                    logger.debug(
+                        "AirtimeScheduler scheduling window pause in %.3fs for %s",
+                        self._resume_window,
+                        pending_reason,
+                    )
+
+                    def _pause_window() -> None:
+                        logger.debug(
+                            "AirtimeScheduler window pause firing for %s",
+                            pending_reason,
+                        )
+                        self._window_handle = None
+                        self._supervisor.pause_from_thread("airtime-window")
+
+                    self._window_handle = self._loop.call_later(
+                        self._resume_window,
+                        _pause_window,
+                    )
+
+            if self._settle_time <= 0:
+                _do_resume()
+            else:
+                self._resume_handle = self._loop.call_later(
+                    self._settle_time,
+                    _do_resume,
+                )
+
+        self._loop.call_soon_threadsafe(_schedule_resume)
+
+    def cancel(self) -> None:
+        self._cancel_handles()
+
+    def _cancel_handles(
+        self, *, cancel_resume: bool = True, cancel_window: bool = True
+    ) -> None:
+        if cancel_resume and self._resume_handle:
+            logger.debug("AirtimeScheduler cancelling pending resume")
+            self._resume_handle.cancel()
+            self._resume_handle = None
+            self._pending_reason = None
+        if cancel_window and self._window_handle:
+            logger.debug("AirtimeScheduler cancelling pending window pause")
+            self._window_handle.cancel()
+            self._window_handle = None
+
+
 def _format_mac(raw: int) -> str:
     """Format a MAC address from the integer returned by uuid.getnode()."""
-    return ":".join(f"{(raw >> shift) & 0xFF:02x}" for shift in range(40, -8, -8))
+    return ":".join(f"{(raw >> shift) & 0xFF:02X}" for shift in range(40, -8, -8))
 
 
 def _determine_proxy_mac(config: configparser.ConfigParser) -> str:
@@ -158,7 +346,7 @@ def _determine_proxy_mac(config: configparser.ConfigParser) -> str:
         if config.has_option("home_assistant_proxy", key):
             candidate = config["home_assistant_proxy"].get(key, "").strip()
             if candidate:
-                return candidate.lower()
+                return candidate.upper()
     node = uuid.getnode()
     if (node >> 40) % 2:
         logger.warning(
@@ -295,6 +483,61 @@ async def run_proxy(config_path: Path) -> None:
     with_renogy_client = config.getboolean(proxy_section, "with_renogy_client", fallback=True)
     battery_client = None
     battery_future: Optional[asyncio.Future] = None
+    battery_stopping = False
+    battery_restart_lock = asyncio.Lock()
+    last_battery_restart: float = 0.0
+    consecutive_timeouts = 0
+
+    async def _restart_battery_client(
+        reason: str,
+        exc: Optional[BaseException],
+        client_error: Optional[str],
+    ) -> None:
+        nonlocal battery_client, battery_future, battery_stopping, last_battery_restart, consecutive_timeouts
+        if not with_renogy_client:
+            return
+        async with battery_restart_lock:
+            if stop_event.is_set() or battery_stopping:
+                return
+            timeout_error = client_error == "read_timeout"
+            if timeout_error:
+                consecutive_timeouts += 1
+                logger.warning(
+                    "Renogy client timed out waiting for data (count=%d)", consecutive_timeouts
+                )
+            else:
+                consecutive_timeouts = 0
+                if client_error:
+                    logger.warning("Renogy client stopped (%s); restarting", client_error)
+                elif exc:
+                    logger.warning("Renogy client stopped (%s): %s", reason, exc)
+                else:
+                    logger.warning("Renogy client stopped (%s); restarting", reason)
+            loop_obj = asyncio.get_running_loop()
+            now = loop_obj.time()
+            if last_battery_restart and now - last_battery_restart < 20:
+                delay = 20 - (now - last_battery_restart)
+                logger.debug(
+                    "Delaying Renogy client restart by %.1fs to respect cooldown", delay
+                )
+                await asyncio.sleep(delay)
+            should_power_cycle = (
+                not timeout_error or consecutive_timeouts >= 3 or exc is not None
+            )
+            if should_power_cycle:
+                logger.warning("Power cycling BLE adapter %s to recover discovery", adapter)
+                try:
+                    await _power_cycle_adapter(adapter)
+                except Exception as power_exc:
+                    logger.error("Adapter power cycle failed: %s", power_exc)
+                await asyncio.sleep(5)
+            else:
+                logger.info("Restarting Renogy client without power cycle")
+                await asyncio.sleep(2)
+            if stop_event.is_set() or battery_stopping:
+                return
+            last_battery_restart = asyncio.get_running_loop().time()
+            await start_battery_client()
 
     api_server = ESPHomeAPIServer(
         name=device_name,
@@ -312,7 +555,7 @@ async def run_proxy(config_path: Path) -> None:
     send_advertisement_callback: Optional[Callable[[Dict[str, object]], None]] = None
 
     def register_advertisement_sender(callback: Callable[[Dict[str, object]], None]) -> None:
-        nonlocal send_advertisement_callback
+        nonlocal send_advertisement_callback, last_adv_timestamp, total_advertisements
         send_advertisement_callback = callback
         logger.info("ESPHome client subscribed to BLE advertisements")
         # Emit a synthetic advertisement so Home Assistant immediately sees the proxy
@@ -329,16 +572,21 @@ async def run_proxy(config_path: Path) -> None:
         }
         try:
             callback(test_payload)
+            total_advertisements += 1
+            last_adv_timestamp = loop.time()
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("Failed to send synthetic advertisement: %s", exc)
 
     api_server.set_advertisement_callback(register_advertisement_sender)
 
     def on_ble_advertisement(device: BLEDevice, advertisement: AdvertisementData) -> None:
+        nonlocal total_advertisements, last_adv_timestamp
         if not send_advertisement_callback:
             return
         if device.name and ADAPTER_NAME_PATTERN.match(device.name):
             return
+        total_advertisements += 1
+        last_adv_timestamp = loop.time()
         logger.info(
             "BLE advertisement: %s (%s) rssi=%s",
             device.address,
@@ -367,6 +615,20 @@ async def run_proxy(config_path: Path) -> None:
 
     scan_active = _get_scan_float("scan_active_seconds", 0.0)
     scan_idle = _get_scan_float("scan_idle_seconds", 0.0)
+    airtime_settle = _get_scan_float("airtime_settle_seconds", 0.4)
+    airtime_window = _get_scan_float("airtime_window_seconds", 3.0)
+    health_interval = _get_scan_float("health_check_interval", 30.0)
+    health_threshold = _get_scan_float("health_check_threshold", 45.0)
+    health_reset_adapter = config.getboolean(
+        proxy_section,
+        "health_reset_adapter",
+        fallback=True,
+    )
+    health_reset_limit = config.getint(
+        proxy_section,
+        "health_reset_limit",
+        fallback=3,
+    )
 
     pause_during_renogy = config.getboolean(
         proxy_section,
@@ -396,6 +658,11 @@ async def run_proxy(config_path: Path) -> None:
 
     use_supervisor = with_renogy_client or pause_during_renogy or (scan_active > 0 and scan_idle > 0)
     scanner_supervisor: Optional[ScannerSupervisor] = None
+    airtime_scheduler: Optional[AirtimeScheduler] = None
+    scanner_task: Optional[asyncio.Task] = None
+    last_adv_timestamp = loop.time()
+    total_advertisements = 0
+    health_task: Optional[asyncio.Task] = None
     if use_supervisor:
         scanner_supervisor = ScannerSupervisor(
             scanner,
@@ -403,25 +670,81 @@ async def run_proxy(config_path: Path) -> None:
             active_time=scan_active,
             idle_time=scan_idle,
         )
+        airtime_scheduler = AirtimeScheduler(
+            scanner_supervisor,
+            loop=loop,
+            resume_window=airtime_window,
+            settle_time=airtime_settle,
+        )
+
+    async def monitor_scanner_health() -> None:
+        if health_interval <= 0 or health_threshold <= 0:
+            return
+        warnings = 0
+        resets = 0
+        try:
+            while not stop_event.is_set():
+                await asyncio.sleep(max(5.0, health_interval))
+                gap = loop.time() - last_adv_timestamp
+                if gap <= health_threshold:
+                    warnings = 0
+                    continue
+                warnings += 1
+                logger.warning(
+                    "No BLE advertisements observed for %.1fs (total=%d)",
+                    gap,
+                    total_advertisements,
+                )
+                if scanner_supervisor:
+                    scanner_supervisor.kick_from_thread("health-gap")
+                if airtime_scheduler:
+                    airtime_scheduler.resume_window("health-gap")
+                if health_reset_adapter and warnings >= 2:
+                    if resets < max(1, health_reset_limit):
+                        resets += 1
+                        logger.warning(
+                            "Health monitor triggering adapter power cycle (%d/%d)",
+                            resets,
+                            health_reset_limit,
+                        )
+                        try:
+                            await _power_cycle_adapter(adapter)
+                        except Exception as exc:
+                            logger.error("Health power cycle failed: %s", exc)
+                    warnings = 0
+        except asyncio.CancelledError:
+            logger.debug("Scanner health monitor cancelled")
+            return
 
     async def start_battery_client() -> None:
-        nonlocal battery_client, battery_future
+        nonlocal battery_client, battery_future, battery_stopping
         if not with_renogy_client:
+            logger.info("Renogy client disabled by configuration")
             return
+        if battery_future and not battery_future.done():
+            logger.debug("Renogy client already running; skipping start")
+            return
+        logger.info("Starting Renogy battery client setup")
+        battery_stopping = False
         battery_client = _create_client(config, data_logger)
+        setattr(battery_client, "last_error", None)
 
-        if scanner_supervisor:
+        if airtime_scheduler:
             def handle_ble_activity(request_pause: bool, stage: str) -> None:
                 if request_pause:
-                    if pause_during_renogy:
-                        scanner_supervisor.pause_from_thread(stage)
+                    airtime_scheduler.pause(stage)
                 else:
-                    if pause_during_renogy:
-                        scanner_supervisor.resume_from_thread(stage)
-                    else:
-                        scanner_supervisor.kick_from_thread(stage)
+                    airtime_scheduler.resume_window(stage)
 
             battery_client.set_ble_activity_callback(handle_ble_activity)
+        elif scanner_supervisor:
+            def handle_ble_activity_legacy(request_pause: bool, stage: str) -> None:
+                if request_pause:
+                    scanner_supervisor.pause_from_thread(stage)
+                else:
+                    scanner_supervisor.resume_from_thread(stage)
+
+            battery_client.set_ble_activity_callback(handle_ble_activity_legacy)
 
         def run_client() -> None:
             try:
@@ -430,12 +753,41 @@ async def run_proxy(config_path: Path) -> None:
                 logger.error("Battery client exited unexpectedly: %s", exc)
 
         battery_future = loop.run_in_executor(None, run_client)
+
+        def _battery_done_callback(
+            fut: asyncio.Future, client_ref=battery_client
+        ) -> None:
+            if stop_event.is_set() or battery_stopping:
+                return
+            exc: Optional[BaseException]
+            try:
+                fut.result()
+            except Exception as err:  # pragma: no cover - best effort logging
+                exc = err
+            else:
+                exc = None
+            if stop_event.is_set() or battery_stopping:
+                return
+            loop.call_soon_threadsafe(
+                lambda: asyncio.create_task(
+                    _restart_battery_client(
+                        "executor exit",
+                        exc,
+                        getattr(client_ref, "last_error", None),
+                    )
+                )
+            )
+
+        battery_future.add_done_callback(_battery_done_callback)
         logger.info("Renogy client started in background executor")
+        if scanner_supervisor and not pause_during_renogy:
+            scanner_supervisor.kick_from_thread("renogy-start")
 
     async def stop_battery_client() -> None:
-        nonlocal battery_client, battery_future
+        nonlocal battery_client, battery_future, battery_stopping
         if not battery_client:
             return
+        battery_stopping = True
         try:
             battery_client.stop()
         except Exception as exc:  # pragma: no cover - best effort
@@ -444,6 +796,7 @@ async def run_proxy(config_path: Path) -> None:
             await asyncio.wrap_future(battery_future)
         battery_client = None
         battery_future = None
+        battery_stopping = False
         logger.info("Renogy client stopped")
 
     def _handle_signal(signum, frame) -> None:  # pragma: no cover - signal handling
@@ -459,15 +812,32 @@ async def run_proxy(config_path: Path) -> None:
             except (NotImplementedError, AttributeError):
                 pass
 
+    if health_interval > 0 and health_threshold > 0:
+        health_task = asyncio.create_task(monitor_scanner_health())
+        logger.info(
+            "Scanner health monitor enabled (interval=%.1fs threshold=%.1fs)",
+            health_interval,
+            health_threshold,
+        )
+    else:
+        logger.info("Scanner health monitor disabled")
+
+    logger.info("with_renogy_client=%s", with_renogy_client)
+
+    await api_server.start()
+    await discovery.start()
+    if scanner_supervisor:
+        logger.info("Starting scanner supervisor")
+        scanner_task = asyncio.create_task(scanner_supervisor.start())
+        logger.info("Scanner supervisor task scheduled")
+    else:
+        await scanner.start()
+        logger.info("Scanner started without supervisor")
+
+    logger.info("Invoking start_battery_client()")
     await start_battery_client()
 
     try:
-        await api_server.start()
-        await discovery.start()
-        if scanner_supervisor:
-            await scanner_supervisor.start()
-        else:
-            await scanner.start()
         logger.info(
             (
                 "ESPHome proxy running on adapter %s (port %d, mac %s, "
@@ -487,6 +857,16 @@ async def run_proxy(config_path: Path) -> None:
     except asyncio.CancelledError:
         raise
     finally:
+        if airtime_scheduler:
+            airtime_scheduler.cancel()
+        if health_task:
+            health_task.cancel()
+            with contextlib.suppress(Exception):
+                await health_task
+        if scanner_task:
+            scanner_task.cancel()
+            with contextlib.suppress(Exception):
+                await scanner_task
         if scanner_supervisor:
             await scanner_supervisor.shutdown()
         else:
