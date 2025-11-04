@@ -75,9 +75,13 @@ def _encode_varint(value: int) -> bytes:
     return bytes(result)
 
 def _make_packet(msg_type: int, payload: bytes) -> bytes:
-    """Create a single ESPHome API packet."""
+    """Create a single ESPHome API packet.
+    
+    In the modern ESPHome protocol (aioesphomeapi 42.x+), the length field
+    represents ONLY the payload size, not including the msg_type varint.
+    """
     msg_type_bytes = _encode_varint(msg_type)
-    length = len(msg_type_bytes) + len(payload)
+    length = len(payload)  # Only payload size, not including msg_type
     packet = bytearray([0x00])  # preamble
     packet.extend(_encode_varint(length))
     packet.extend(msg_type_bytes)
@@ -150,30 +154,22 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
                 self._close_transport()
                 return
 
-            # Remember position to compute how many bytes the msg_type varint consumes
-            pos_before_msg_type = self._pos
             msg_type = self._read_varuint()
             if msg_type == -1:
                 logger.error("Failed to read message type; closing connection")
                 self._reset_buffer()
                 self._close_transport()
                 return
-            msg_type_len = self._pos - pos_before_msg_type
 
+            # In the modern ESPHome protocol (aioesphomeapi 42.x+), the length field
+            # represents ONLY the payload size, not including the msg_type varint.
+            # This is different from older versions where length = msg_type_size + payload_size.
             if length == 0:
                 self._remove_from_buffer()
                 self._process_packet(msg_type, b"")
                 continue
-            payload_len = length - msg_type_len
-            if payload_len < 0:
-                logger.error(
-                    "Invalid payload length calculated (length=%d, msg_type_len=%d); closing connection",
-                    length,
-                    msg_type_len,
-                )
-                self._reset_buffer()
-                self._close_transport()
-                return
+            
+            payload_len = length
             packet = self._read(payload_len)
             if packet is None:
                 return  # Wait for the rest of the packet
