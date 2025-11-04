@@ -32,24 +32,25 @@ def write_varint(value):
     return bytes(result)
 
 def send_message(sock, msg_type, data=b''):
-    """Send an ESPHome API message"""
-    # Message format: 0x00 + varint(length) + varint(type) + data
+    """Send an ESPHome API message (modern protocol: aioesphomeapi 42.x+)"""
+    # Modern message format: 0x00 + varint(payload_length) + varint(type) + payload
+    # Note: length field is ONLY the payload size, not including msg_type
     msg = bytearray([0x00])
-    msg_data = write_varint(msg_type) + data
-    msg += write_varint(len(msg_data))
-    msg += msg_data
+    msg += write_varint(len(data))  # Length is only payload size
+    msg += write_varint(msg_type)
+    msg += data
     sock.send(msg)
-    print(f"→ Sent message type {msg_type}, length {len(msg_data)}")
+    print(f"→ Sent message type {msg_type}, payload length {len(data)}")
 
 def recv_message(sock):
-    """Receive an ESPHome API message"""
+    """Receive an ESPHome API message (modern protocol: aioesphomeapi 42.x+)"""
     # Read preamble
     preamble = sock.recv(1)
     if not preamble or preamble[0] != 0x00:
         print(f"✗ Invalid preamble: {preamble.hex() if preamble else 'empty'}")
         return None, None
     
-    # Read length
+    # Read length (payload size only, does NOT include msg_type)
     length = read_varint(sock)
     if length is None:
         print("✗ Failed to read message length")
@@ -61,16 +62,15 @@ def recv_message(sock):
         print("✗ Failed to read message type")
         return None, None
     
-    # Read data
-    remaining = length - len(write_varint(msg_type))
+    # Read payload (length bytes)
     data = b''
-    while len(data) < remaining:
-        chunk = sock.recv(remaining - len(data))
+    while len(data) < length:
+        chunk = sock.recv(length - len(data))
         if not chunk:
             break
         data += chunk
     
-    print(f"← Received message type {msg_type}, length {length}, data length {len(data)}")
+    print(f"← Received message type {msg_type}, payload length {length}, data length {len(data)}")
     return msg_type, data
 
 def test_connection():
