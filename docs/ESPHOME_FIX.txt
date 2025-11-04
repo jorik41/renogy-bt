@@ -1,0 +1,148 @@
+================================================================================
+ESPHOME HANDSHAKE FIX voor renogy-bt 
+Branch: codex/add-ha-bt-proxy-support
+================================================================================
+
+PROBLEEM:
+---------
+De ESPHome API server reageert niet op HelloRequest berichten van Home Assistant.
+Het probleem zit in renogybt/esphome_api_server.py regel 148.
+
+De code leest te veel bytes omdat:
+- De 'length' variabele bevat msg_type + payload
+- Na het lezen van msg_type moet je alleen de resterende payload lezen
+- Maar de code las opnieuw de hele 'length', inclusief msg_type
+
+Dit veroorzaakt dat:
+1. De verkeerde bytes worden gelezen als payload
+2. De buffer raakt uit sync
+3. Geen enkele response wordt gestuurd
+
+OPLOSSING:
+----------
+Bereken hoeveel bytes het msg_type varint verbruikte en trek dit af van length.
+
+FIX IN renogybt/esphome_api_server.py:
+---------------------------------------
+
+VOOR (regel 129-148):
+```python
+length = self._read_varuint()
+if length == -1:
+    logger.error("Failed to read length; closing connection")
+    self._reset_buffer()
+    self._close_transport()
+    return
+
+msg_type = self._read_varuint()
+if msg_type == -1:
+    logger.error("Failed to read message type; closing connection")
+    self._reset_buffer()
+    self._close_transport()
+    return
+
+if length == 0:
+    self._remove_from_buffer()
+    self._process_packet(msg_type, b"")
+    continue
+
+packet = self._read(length)  # <-- FOUT: leest te veel
+if packet is None:
+    return
+```
+
+NA (met fix):
+```python
+length = self._read_varuint()
+if length == -1:
+    logger.error("Failed to read length; closing connection")
+    self._reset_buffer()
+    self._close_transport()
+    return
+
+# Remember position before reading msg_type to calculate its size
+pos_before_msg_type = self._pos
+
+msg_type = self._read_varuint()
+if msg_type == -1:
+    logger.error("Failed to read message type; closing connection")
+    self._reset_buffer()
+    self._close_transport()
+    return
+
+# Calculate how many bytes the msg_type varint consumed
+msg_type_len = self._pos - pos_before_msg_type
+
+if length == 0:
+    self._remove_from_buffer()
+    self._process_packet(msg_type, b"")
+    continue
+
+# length includes msg_type, so subtract it to get payload length
+payload_len = length - msg_type_len
+packet = self._read(payload_len)  # <-- CORRECT: leest alleen payload
+if packet is None:
+    return
+```
+
+TOEPASSEN OP PI ZERO:
+----------------------
+Op je Pi Zero 2W:
+
+1. ssh naar je Pi
+2. cd /pad/naar/renogy-bt
+3. git pull origin codex/add-ha-bt-proxy-support (als je al de branch hebt)
+4. Edit renogybt/esphome_api_server.py en pas de fix toe
+5. Herstart je service
+
+OF gebruik deze patch:
+```bash
+cd /pad/naar/renogy-bt
+patch -p1 << 'EOF'
+--- a/renogybt/esphome_api_server.py
++++ b/renogybt/esphome_api_server.py
+@@ -133,6 +133,9 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
+                 self._close_transport()
+                 return
+ 
++            # Remember position before reading msg_type to calculate its size
++            pos_before_msg_type = self._pos
++            
+             msg_type = self._read_varuint()
+             if msg_type == -1:
+                 logger.error("Failed to read message type; closing connection")
+@@ -140,12 +143,17 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
+                 self._close_transport()
+                 return
+ 
++            # Calculate how many bytes the msg_type varint consumed
++            msg_type_len = self._pos - pos_before_msg_type
++
+             if length == 0:
+                 self._remove_from_buffer()
+                 self._process_packet(msg_type, b"")
+                 continue
+ 
+-            packet = self._read(length)
++            # length includes msg_type, so subtract it to get payload length
++            payload_len = length - msg_type_len
++            packet = self._read(payload_len)
+             if packet is None:
+                 return  # Wait for the rest of the packet
+ 
+EOF
+```
+
+TESTEN:
+-------
+Na de fix kun je testen met:
+```bash
+python3 /home/jorik41/test_esphome_api.py
+```
+
+Je zou nu moeten zien:
+✓ TCP connection established
+✓ Received HelloResponse
+✓ Received ConnectResponse
+
+================================================================================

@@ -1,0 +1,60 @@
+================================================================================
+HOE TE FIXEN OP JE PI ZERO 2W
+================================================================================
+
+STAP 1: SSH naar je Pi Zero
+----------------------------
+ssh pi@192.168.1.28
+
+STAP 2: Navigeer naar je renogy-bt directory
+---------------------------------------------
+cd ~/renogy-bt  # of waar je het hebt staan
+
+STAP 3: Pas de patch toe
+-------------------------
+patch -p1 < /pad/naar/esphome_handshake_fix.patch
+
+OF handmatig editeren:
+nano renogybt/esphome_api_server.py
+
+En zoek regel 136 (msg_type = self._read_varuint())
+Voeg hiervoor toe:
+    # Remember position before reading msg_type to calculate its size
+    pos_before_msg_type = self._pos
+
+Dan na regel 143, voeg toe:
+    # Calculate how many bytes the msg_type varint consumed
+    msg_type_len = self._pos - pos_before_msg_type
+
+En verander regel 148 van:
+    packet = self._read(length)
+naar:
+    # length includes msg_type, so subtract it to get payload length
+    payload_len = length - msg_type_len
+    packet = self._read(payload_len)
+
+STAP 4: Herstart je service
+----------------------------
+sudo systemctl restart renogy-bt
+# of
+pkill -f esphome_proxy_example.py
+python3 esphome_proxy_example.py
+
+STAP 5: Test de verbinding
+---------------------------
+Vanaf deze computer:
+python3 /home/jorik41/test_esphome_api.py
+
+Je zou moeten zien:
+✓ TCP connection established
+✓ Received HelloResponse
+✓ Received ConnectResponse
+
+STAP 6: Voeg toe aan Home Assistant
+------------------------------------
+1. Ga naar Settings -> Devices & Services
+2. Klik "+ Add Integration"
+3. Zoek "ESPHome"
+4. Het device verschijnt automatisch via mDNS
+5. Klik erop om toe te voegen
+
