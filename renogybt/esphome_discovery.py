@@ -43,7 +43,8 @@ class ESPHomeDiscovery:
             "platform": "linux",
             "board": "generic",
             "network": "ethernet",
-            "api_version": "1.13",
+            # Use an API minor version broadly compatible with HA
+            "api_version": "1.12",
             "use_password": "false",
             "bluetooth_proxy": "true",
             "bluetooth_proxy_version": "5",
@@ -56,12 +57,15 @@ class ESPHomeDiscovery:
         service_name = f"{self.name}.{service_type}"
 
         self._aiozc = AsyncZeroconf(ip_version=IPVersion.V4Only)
+        # Provide an explicit host name to strengthen discovery consistency
+        server_host = f"{socket.gethostname()}.local."
         self._service_info = AsyncServiceInfo(
             type_=service_type,
             name=service_name,
             addresses=[address],
             port=self.port,
             properties=properties,
+            server=server_host,
         )
 
         await self._aiozc.async_register_service(self._service_info)

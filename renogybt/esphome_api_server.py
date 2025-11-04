@@ -133,18 +133,31 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
                 self._close_transport()
                 return
 
+            # Remember position to compute how many bytes the msg_type varint consumes
+            pos_before_msg_type = self._pos
             msg_type = self._read_varuint()
             if msg_type == -1:
                 logger.error("Failed to read message type; closing connection")
                 self._reset_buffer()
                 self._close_transport()
                 return
+            msg_type_len = self._pos - pos_before_msg_type
 
             if length == 0:
                 self._remove_from_buffer()
                 self._process_packet(msg_type, b"")
                 continue
-            packet = self._read(length)
+            payload_len = length - msg_type_len
+            if payload_len < 0:
+                logger.error(
+                    "Invalid payload length calculated (length=%d, msg_type_len=%d); closing connection",
+                    length,
+                    msg_type_len,
+                )
+                self._reset_buffer()
+                self._close_transport()
+                return
+            packet = self._read(payload_len)
             if packet is None:
                 return  # Wait for the rest of the packet
 
@@ -171,7 +184,7 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
             responses.append(
                 HelloResponse(
                     api_version_major=1,
-                    api_version_minor=13,
+                    api_version_minor=12,
                     name=self.name,
                     server_info=f"renogybt-proxy/{self.version}",
                 )
@@ -281,7 +294,8 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
     # Helpers --------------------------------------------------------------
 
     def _send_ble_advertisement(self, advertisement: dict) -> None:
-        if not self._subscribed_to_ble or not self._writelines:
+        # Only send if there is an active connection transport and a client is subscribed.
+        if not self._subscribed_to_ble or not self._transport:
             return
 
         try:
@@ -446,7 +460,8 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
             logger.error("Failed to serialise BLE advertisement: %s", exc, exc_info=True)
 
     def _send_messages(self, messages: List[Message]) -> None:
-        if not self._writelines:
+        # Guard on transport instead of writelines since we use write() below.
+        if not self._transport:
             return
 
         try:
