@@ -6,7 +6,6 @@ import asyncio
 import logging
 from typing import Callable, Dict, List, Optional, Type
 
-from aioesphomeapi._frame_helper.packets import make_plain_text_packets
 from aioesphomeapi.api_pb2 import (  # type: ignore[attr-defined]
     AuthenticationRequest,
     AuthenticationResponse,
@@ -66,6 +65,24 @@ if not logger.handlers:
     logger.addHandler(logging.NullHandler())
 logger.setLevel(logging.DEBUG)
 
+def _encode_varint(value: int) -> bytes:
+    """Encode an integer as a protobuf varint."""
+    result = bytearray()
+    while value > 0x7F:
+        result.append((value & 0x7F) | 0x80)
+        value >>= 7
+    result.append(value & 0x7F)
+    return bytes(result)
+
+def _make_packet(msg_type: int, payload: bytes) -> bytes:
+    """Create a single ESPHome API packet."""
+    msg_type_bytes = _encode_varint(msg_type)
+    length = len(msg_type_bytes) + len(payload)
+    packet = bytearray([0x00])  # preamble
+    packet.extend(_encode_varint(length))
+    packet.extend(msg_type_bytes)
+    packet.extend(payload)
+    return bytes(packet)
 
 class ESPHomeAPIProtocol(asyncio.Protocol):
     """ESPHome native API protocol handler."""
@@ -471,10 +488,10 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
             ]
             for msg in messages:
                 logger.debug("Sending ESPHome message: %s", msg.__class__.__name__)
-            payloads = make_plain_text_packets(packets)
-            for payload in payloads:
+            for msg_type, payload in packets:
+                packet = _make_packet(msg_type, payload)
                 logger.debug("ESPHome packet bytes (len=%d): %s", len(payload), payload.hex())
-                self._transport.write(payload)  # type: ignore[union-attr]
+                self._transport.write(packet)  # type: ignore[union-attr]
         except Exception as exc:  # pragma: no cover - defensive
             logger.error("Failed to send ESPHome messages: %s", exc, exc_info=True)
 
