@@ -7,9 +7,8 @@ import argparse
 import re
 import socket
 import sys
-import time
 import traceback
-from typing import Optional, Tuple, Dict, List
+from typing import Optional, Tuple, Dict
 from dataclasses import dataclass
 
 # ANSI color codes for output

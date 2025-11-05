@@ -837,8 +837,6 @@ async def run_proxy(config_path: Path) -> None:
         try:
             while not stop_event.is_set():
                 await asyncio.sleep(renogy_read_interval)
-                if stop_event.is_set():
-                    break
                 
                 # Check if previous read is still running
                 if battery_future and not battery_future.done():

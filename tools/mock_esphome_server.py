@@ -20,6 +20,8 @@ class MockESPHomeProtocol(asyncio.Protocol):
     @staticmethod
     def encode_varint(value: int) -> bytes:
         """Encode an integer as a protobuf varint"""
+        if value < 0:
+            raise ValueError("Varint must be non-negative")
         result = bytearray()
         while value > 0x7F:
             result.append((value & 0x7F) | 0x80)
