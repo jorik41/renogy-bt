@@ -260,7 +260,7 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
                     accuracy_decimals=entity_info.get('accuracy_decimals', 2),
                     force_update=entity_info.get('force_update', False),
                     device_class=entity_info.get('device_class', ''),
-                    state_class=entity_info.get('state_class', SensorStateClass.SENSOR_STATE_CLASS_MEASUREMENT),
+                    state_class=entity_info.get('state_class', SensorStateClass.STATE_CLASS_MEASUREMENT),
                     disabled_by_default=entity_info.get('disabled_by_default', False),
                 )
                 responses.append(sensor_response)

@@ -13,7 +13,7 @@ def _guess_sensor_attributes(key: str, temp_unit: str = 'C') -> Dict[str, object
     attrs = {
         'unit_of_measurement': '',
         'device_class': '',
-        'state_class': SensorStateClass.SENSOR_STATE_CLASS_MEASUREMENT,
+        'state_class': SensorStateClass.STATE_CLASS_MEASUREMENT,
         'accuracy_decimals': 2,
         'icon': '',
     }
@@ -66,7 +66,7 @@ def _guess_sensor_attributes(key: str, temp_unit: str = 'C') -> Dict[str, object
         else:
             attrs['unit_of_measurement'] = 'Wh'
         attrs['device_class'] = 'energy'
-        attrs['state_class'] = SensorStateClass.SENSOR_STATE_CLASS_TOTAL_INCREASING
+        attrs['state_class'] = SensorStateClass.STATE_CLASS_TOTAL_INCREASING
         attrs['accuracy_decimals'] = 2
         attrs['icon'] = 'mdi:lightning-bolt-circle'
     
