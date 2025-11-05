@@ -45,6 +45,11 @@ If your network uses multiple interfaces (for example, ethernet and Wi-Fi) and
 Home Assistant detects the wrong address, set `mdns_ip` under
 `[home_assistant_proxy]` in `config.ini` to the IP you want advertised.
 
+> **Note:** Recent versions have been optimized to eliminate configuration timeouts that could
+> occur with Home Assistant 2024.11+. If you experienced timeouts during device configuration,
+> updating to the latest version should resolve the issue. See
+> [ESPHOME_CONFIGURATION_FIX.md](docs/ESPHOME_CONFIGURATION_FIX.md) for details.
+
 **Manual Setup:**
 
 If automatic discovery doesn't work, you can manually add the proxy:
