@@ -58,6 +58,11 @@ automatically pauses BLE scanning while the Renogy client performs discovery or
 connects, freeing up airtime for Wi-Fi. You can further tune behaviour via the
 `[home_assistant_proxy]` settings in `config.ini`:
 
+- `renogy_poll_mode = scheduled` (recommended) makes Renogy reads run at intervals
+  without blocking the proxy scanner. Use `continuous` for the old behavior where
+  Renogy polls continuously based on `[data] poll_interval`.
+- `renogy_read_interval = 60` sets the interval (in seconds) between Renogy device
+  reads when using `scheduled` mode. Default is 60 seconds.
 - `scan_mode = passive` (optional) keeps the host from issuing active scan
   requests, which cuts down on radio chatter if you choose to enable it.
 - `scan_active_seconds` / `scan_idle_seconds` let you apply a light duty cycle
