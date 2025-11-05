@@ -419,10 +419,10 @@ def _create_client(
 
     alias = config["device"]["alias"]
     battery_map: Dict[int, Dict[str, object]] = {}
-    sensor_entities_initialized = False
+    sensor_entities_initialized_ids = set()
 
     def on_data_received(client, data):
-        nonlocal sensor_entities_initialized
+        nonlocal sensor_entities_initialized_ids
         
         Utils.add_calculated_values(data)
         dev_id = data.get("device_id")
@@ -440,12 +440,12 @@ def _create_client(
         logger.info("%s => %s", client.ble_manager.device.name, filtered_data)
 
         # Initialize sensor entities on first data read
-        if api_server is not None and not sensor_entities_initialized:
+        if api_server is not None and alias_id not in sensor_entities_initialized_ids:
             try:
                 temp_unit = config["data"].get("temperature_unit", fallback="C")
                 entities = create_sensor_entities_from_data(filtered_data, alias_id, temp_unit)
                 api_server.set_sensor_entities(entities)
-                sensor_entities_initialized = True
+                sensor_entities_initialized_ids.add(alias_id)
                 logger.info("Initialized %d sensor entities for ESPHome API", len(entities))
             except Exception as exc:
                 logger.error("Failed to initialize sensor entities: %s", exc)
@@ -465,6 +465,17 @@ def _create_client(
                 combined = Utils.combine_battery_readings(battery_map)
                 filtered_combined = Utils.filter_fields(combined, fields)
                 logger.info("combined => %s", filtered_combined)
+                # Initialize sensor entities for combined data if not already done
+                combined_alias = f"{alias}_combined"
+                if api_server is not None and combined_alias not in sensor_entities_initialized_ids:
+                    try:
+                        temp_unit = config["data"].get("temperature_unit", fallback="C")
+                        entities = create_sensor_entities_from_data(filtered_combined, combined_alias, temp_unit)
+                        api_server.set_sensor_entities(entities)
+                        sensor_entities_initialized_ids.add(combined_alias)
+                        logger.info("Initialized %d sensor entities for combined data", len(entities))
+                    except Exception as exc:
+                        logger.error("Failed to initialize combined sensor entities: %s", exc)
                 # Send combined data to ESPHome API
                 if api_server is not None:
                     try:
