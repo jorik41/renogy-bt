@@ -74,6 +74,29 @@ version fields) to ensure compatibility with current Home Assistant versions.
 If you're upgrading from an older version, Home Assistant should automatically
 recognize the proxy as a Bluetooth scanner after the update.
 
+**Testing the ESPHome API:**
+
+To test and validate the ESPHome API handshake protocol and Bluetooth proxy functionality, use the comprehensive test suite:
+
+```sh
+# Run all tests against your proxy
+python3 ./tools/comprehensive_esphome_test.py
+
+# Run integration test with mock server
+python3 ./tools/run_integration_test.py
+```
+
+The test suite validates:
+- ✅ Varint encoding/decoding
+- ✅ Device name format (must contain a dot, e.g., `renogy.proxy`)
+- ✅ Message length field accuracy
+- ✅ Complete handshake sequence
+- ✅ DeviceInfo request/response
+- ✅ BLE advertisement subscription
+- ✅ Protocol compliance
+
+See [tools/README_TESTING.md](tools/README_TESTING.md) for detailed documentation.
+
 **How to get mac address?**
 
 The library will automatically list possible compatible devices discovered nearby, just run `example.py`. You can alternatively use apps like [BLE Scanner](https://play.google.com/store/apps/details?id=com.macdom.ble.blescanner).
