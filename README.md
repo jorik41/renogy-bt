@@ -58,6 +58,11 @@ automatically pauses BLE scanning while the Renogy client performs discovery or
 connects, freeing up airtime for Wi-Fi. You can further tune behaviour via the
 `[home_assistant_proxy]` settings in `config.ini`:
 
+- `renogy_poll_mode = scheduled` (recommended) makes Renogy reads run at intervals
+  without blocking the proxy scanner. Use `continuous` for the old behavior where
+  Renogy polls continuously based on `[data] poll_interval`.
+- `renogy_read_interval = 60` sets the interval (in seconds) between Renogy device
+  reads when using `scheduled` mode. Default is 60 seconds.
 - `scan_mode = passive` (optional) keeps the host from issuing active scan
   requests, which cuts down on radio chatter if you choose to enable it.
 - `scan_active_seconds` / `scan_idle_seconds` let you apply a light duty cycle
@@ -73,6 +78,29 @@ The proxy uses the modern ESPHome Bluetooth proxy protocol (without legacy
 version fields) to ensure compatibility with current Home Assistant versions.
 If you're upgrading from an older version, Home Assistant should automatically
 recognize the proxy as a Bluetooth scanner after the update.
+
+**Testing the ESPHome API:**
+
+To test and validate the ESPHome API handshake protocol and Bluetooth proxy functionality, use the comprehensive test suite:
+
+```sh
+# Run all tests against your proxy
+python3 ./tools/comprehensive_esphome_test.py
+
+# Run integration test with mock server
+python3 ./tools/run_integration_test.py
+```
+
+The test suite validates:
+- ✅ Varint encoding/decoding
+- ✅ Device name format (must contain a dot, e.g., `renogy.proxy`)
+- ✅ Message length field accuracy
+- ✅ Complete handshake sequence
+- ✅ DeviceInfo request/response
+- ✅ BLE advertisement subscription
+- ✅ Protocol compliance
+
+See [tools/README_TESTING.md](tools/README_TESTING.md) for detailed documentation.
 
 **How to get mac address?**
 

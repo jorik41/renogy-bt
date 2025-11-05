@@ -356,7 +356,7 @@ def _determine_proxy_mac(config: configparser.ConfigParser) -> str:
     return _format_mac(node)
 
 
-def _create_client(config: configparser.ConfigParser, data_logger: DataLogger):
+def _create_client(config: configparser.ConfigParser, data_logger: DataLogger, scheduled_mode: bool = False):
     """Instantiate the appropriate Renogy client."""
 
     alias = config["device"]["alias"]
@@ -398,7 +398,8 @@ def _create_client(config: configparser.ConfigParser, data_logger: DataLogger):
             and config["device"]["type"] == "RNG_CTRL"
         ):
             data_logger.log_pvoutput(json_data=filtered_data)
-        if not config["data"].getboolean("enable_polling"):
+        # In scheduled mode, always stop after one read; in continuous mode, check config
+        if scheduled_mode or not config["data"].getboolean("enable_polling"):
             client.stop()
 
     def on_error(client, error):
@@ -481,12 +482,15 @@ async def run_proxy(config_path: Path) -> None:
     data_logger = DataLogger(config)
 
     with_renogy_client = config.getboolean(proxy_section, "with_renogy_client", fallback=True)
+    renogy_poll_mode = config.get(proxy_section, "renogy_poll_mode", fallback="continuous").lower()
+    renogy_read_interval = config.getfloat(proxy_section, "renogy_read_interval", fallback=60.0)
     battery_client = None
     battery_future: Optional[asyncio.Future] = None
     battery_stopping = False
     battery_restart_lock = asyncio.Lock()
     last_battery_restart: float = 0.0
     consecutive_timeouts = 0
+    renogy_scheduler_task: Optional[asyncio.Task] = None
 
     async def _restart_battery_client(
         reason: str,
@@ -724,9 +728,12 @@ async def run_proxy(config_path: Path) -> None:
         if battery_future and not battery_future.done():
             logger.debug("Renogy client already running; skipping start")
             return
-        logger.info("Starting Renogy battery client setup")
+        logger.info("Starting Renogy battery client setup (mode: %s)", renogy_poll_mode)
         battery_stopping = False
-        battery_client = _create_client(config, data_logger)
+        
+        # For scheduled mode, create client with scheduled_mode=True to stop after one read
+        scheduled = renogy_poll_mode == "scheduled"
+        battery_client = _create_client(config, data_logger, scheduled_mode=scheduled)
         setattr(battery_client, "last_error", None)
 
         if airtime_scheduler:
@@ -768,15 +775,20 @@ async def run_proxy(config_path: Path) -> None:
                 exc = None
             if stop_event.is_set() or battery_stopping:
                 return
-            loop.call_soon_threadsafe(
-                lambda: asyncio.create_task(
-                    _restart_battery_client(
-                        "executor exit",
-                        exc,
-                        getattr(client_ref, "last_error", None),
+            # In scheduled mode, don't auto-restart - the scheduler will trigger next read
+            if renogy_poll_mode != "scheduled":
+                loop.call_soon_threadsafe(
+                    lambda: asyncio.create_task(
+                        _restart_battery_client(
+                            "executor exit",
+                            exc,
+                            getattr(client_ref, "last_error", None),
+                        )
                     )
                 )
-            )
+            else:
+                # In scheduled mode, just log completion
+                logger.debug("Renogy scheduled read completed")
 
         battery_future.add_done_callback(_battery_done_callback)
         logger.info("Renogy client started in background executor")
@@ -812,6 +824,31 @@ async def run_proxy(config_path: Path) -> None:
             except (NotImplementedError, AttributeError):
                 pass
 
+    async def scheduled_renogy_reader() -> None:
+        """Periodically trigger Renogy reads in scheduled mode."""
+        if renogy_poll_mode != "scheduled":
+            return
+        
+        logger.info(
+            "Renogy scheduled reader enabled (interval=%.1fs)",
+            renogy_read_interval,
+        )
+        
+        try:
+            while not stop_event.is_set():
+                await asyncio.sleep(renogy_read_interval)
+                
+                # Check if previous read is still running
+                if battery_future and not battery_future.done():
+                    logger.debug("Skipping scheduled Renogy read - previous read still in progress")
+                    continue
+                
+                logger.info("Triggering scheduled Renogy read")
+                await start_battery_client()
+        except asyncio.CancelledError:
+            logger.debug("Renogy scheduler cancelled")
+            return
+
     if health_interval > 0 and health_threshold > 0:
         health_task = asyncio.create_task(monitor_scanner_health())
         logger.info(
@@ -823,6 +860,10 @@ async def run_proxy(config_path: Path) -> None:
         logger.info("Scanner health monitor disabled")
 
     logger.info("with_renogy_client=%s", with_renogy_client)
+    
+    # Start scheduled reader if in scheduled mode
+    if with_renogy_client and renogy_poll_mode == "scheduled":
+        renogy_scheduler_task = asyncio.create_task(scheduled_renogy_reader())
 
     await api_server.start()
     await discovery.start()
@@ -834,20 +875,26 @@ async def run_proxy(config_path: Path) -> None:
         await scanner.start()
         logger.info("Scanner started without supervisor")
 
-    logger.info("Invoking start_battery_client()")
-    await start_battery_client()
+    # In continuous mode, start client immediately; in scheduled mode, the scheduler will trigger it
+    if renogy_poll_mode == "continuous":
+        logger.info("Starting Renogy client in continuous mode")
+        await start_battery_client()
+    else:
+        logger.info("Renogy client in scheduled mode - waiting for first scheduled interval")
 
     try:
         logger.info(
             (
                 "ESPHome proxy running on adapter %s (port %d, mac %s, "
-                "Renogy client: %s, scan mode: %s, duty cycle: %.1fs/%.1fs, "
+                "Renogy client: %s (mode: %s, interval: %.1fs), scan mode: %s, duty cycle: %.1fs/%.1fs, "
                 "autopause: %s)"
             ),
             adapter,
             native_port,
             proxy_mac,
             "enabled" if with_renogy_client else "disabled",
+            renogy_poll_mode,
+            renogy_read_interval,
             scanner_kwargs.get("scanning_mode", "default"),
             scan_active,
             scan_idle,
@@ -859,6 +906,10 @@ async def run_proxy(config_path: Path) -> None:
     finally:
         if airtime_scheduler:
             airtime_scheduler.cancel()
+        if renogy_scheduler_task:
+            renogy_scheduler_task.cancel()
+            with contextlib.suppress(Exception):
+                await renogy_scheduler_task
         if health_task:
             health_task.cancel()
             with contextlib.suppress(Exception):
