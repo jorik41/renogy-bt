@@ -540,21 +540,28 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
             logger.error("Failed to send sensor states: %s", exc, exc_info=True)
 
     def _send_messages(self, messages: List[Message]) -> None:
-        # Guard on transport instead of writelines since we use write() below.
+        # Use writelines() to send all packets in a single operation for better latency
         if not self._transport:
             return
 
         try:
-            packets = [
-                (PROTO_TO_MESSAGE_TYPE[msg.__class__], msg.SerializeToString())
-                for msg in messages
-            ]
+            packets = []
             for msg in messages:
                 logger.debug("Sending ESPHome message: %s", msg.__class__.__name__)
-            for msg_type, payload in packets:
+                msg_type = PROTO_TO_MESSAGE_TYPE[msg.__class__]
+                payload = msg.SerializeToString()
                 packet = _make_packet(msg_type, payload)
                 logger.debug("ESPHome packet bytes (len=%d): %s", len(payload), payload.hex())
-                self._transport.write(packet)  # type: ignore[union-attr]
+                packets.append(packet)
+            
+            # Send all packets at once to reduce TCP buffering delays
+            if packets:
+                if self._writelines and len(packets) > 1:
+                    self._writelines(packets)
+                else:
+                    # Fallback to individual writes if writelines not available
+                    for packet in packets:
+                        self._transport.write(packet)  # type: ignore[union-attr]
         except Exception as exc:  # pragma: no cover - defensive
             logger.error("Failed to send ESPHome messages: %s", exc, exc_info=True)
 
