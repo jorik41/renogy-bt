@@ -556,7 +556,8 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
             
             # Send all packets at once to reduce TCP buffering delays
             if packets:
-                if self._writelines and len(packets) > 1:
+                if self._writelines:
+                    # Use writelines for all packets (even single ones) to minimize latency
                     self._writelines(packets)
                 else:
                     # Fallback to individual writes if writelines not available

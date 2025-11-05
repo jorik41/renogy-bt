@@ -54,8 +54,6 @@ After updating to this version, you should see:
 ```bash
 cd /path/to/renogy-bt
 git pull origin main
-# Or if you're on the fix branch:
-git pull origin copilot/fix-esp-home-device-configuration
 
 # Restart the proxy service
 sudo systemctl restart renogy-bt-proxy
