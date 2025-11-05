@@ -109,6 +109,12 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
         self.version = version
         self._on_subscribe_callback = on_subscribe_callback
         self._sensor_entities = sensor_entities or {}
+        # Create reverse mapping for O(1) lookups: data_key -> entity_info
+        self._data_key_to_entity: Dict[str, Dict] = {}
+        for entity_info in self._sensor_entities.values():
+            data_key = entity_info.get('data_key')
+            if data_key:
+                self._data_key_to_entity[data_key] = entity_info
         self._on_disconnect = on_disconnect
         self._subscribed_to_ble = False
         self._subscribed_to_connections_free = False
@@ -517,16 +523,15 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
         try:
             responses = []
             for data_key, value in sensor_data.items():
-                # Find the corresponding sensor entity
-                for entity_key, entity_info in self._sensor_entities.items():
-                    if entity_info.get('data_key', entity_key) == data_key:
-                        sensor_state = SensorStateResponse(
-                            key=entity_info['key'],
-                            state=float(value),
-                            missing_state=False,
-                        )
-                        responses.append(sensor_state)
-                        break
+                # Use reverse mapping for O(1) lookup instead of nested loop
+                entity_info = self._data_key_to_entity.get(data_key)
+                if entity_info:
+                    sensor_state = SensorStateResponse(
+                        key=entity_info['key'],
+                        state=float(value),
+                        missing_state=False,
+                    )
+                    responses.append(sensor_state)
             
             if responses:
                 self._send_messages(responses)
@@ -619,6 +624,14 @@ class ESPHomeAPIServer:
     def set_sensor_entities(self, entities: Dict[str, Dict]) -> None:
         """Define sensor entities to expose via the ESPHome API."""
         self._sensor_entities = entities
+        # Update reverse mapping in all active protocols
+        for protocol in self._active_protocols:
+            protocol._sensor_entities = entities
+            protocol._data_key_to_entity = {}
+            for entity_info in entities.values():
+                data_key = entity_info.get('data_key')
+                if data_key:
+                    protocol._data_key_to_entity[data_key] = entity_info
         logger.info("Configured %d sensor entities", len(entities))
 
     def send_sensor_states(self, sensor_data: Dict[str, float]) -> None:

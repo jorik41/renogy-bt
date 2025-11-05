@@ -891,7 +891,9 @@ async def run_proxy(config_path: Path) -> None:
         
         # For scheduled mode, create client with scheduled_mode=True to stop after one read
         scheduled = renogy_poll_mode == "scheduled"
-        battery_client = _create_client(config, data_logger, api_server, scheduled_mode=scheduled)
+        # Only pass api_server if ESPHome sensors are enabled
+        api_server_arg = api_server if esphome_sensors_enabled else None
+        battery_client = _create_client(config, data_logger, api_server_arg, scheduled_mode=scheduled)
         setattr(battery_client, "last_error", None)
 
         if airtime_scheduler:

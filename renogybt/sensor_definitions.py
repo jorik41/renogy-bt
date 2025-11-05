@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Dict, Optional
+from typing import Dict
 
 from aioesphomeapi.api_pb2 import SensorStateClass
 
@@ -78,7 +78,7 @@ def _guess_sensor_attributes(key: str, temp_unit: str = 'C') -> Dict[str, object
         attrs['icon'] = 'mdi:sine-wave'
     
     # Capacity (for batteries)
-    elif 'capacity' in lkey or 'charge' in lkey:
+    elif 'capacity' in lkey or lkey.endswith('charge') or lkey.endswith('_charge'):
         attrs['unit_of_measurement'] = 'Ah'
         attrs['accuracy_decimals'] = 2
         attrs['icon'] = 'mdi:battery-high'
