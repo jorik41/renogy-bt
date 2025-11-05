@@ -216,6 +216,7 @@ async def run_server(host: str = "localhost", port: int = 6053,
     
     print(f"Mock ESPHome server listening on {host}:{port}")
     print(f"Device name: {device_name}")
+    # Note: This is test/mock data only, not real sensitive information
     print(f"MAC address: {mac_address}")
     print("Press Ctrl+C to stop")
     
