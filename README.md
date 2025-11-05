@@ -62,7 +62,12 @@ connects, freeing up airtime for Wi-Fi. You can further tune behaviour via the
   without blocking the proxy scanner. Use `continuous` for the old behavior where
   Renogy polls continuously based on `[data] poll_interval`.
 - `renogy_read_interval = 60` sets the interval (in seconds) between Renogy device
-  reads when using `scheduled` mode. Default is 60 seconds.
+  reads when using `scheduled` mode. Default is 60 seconds; set to `0` when you
+  want the proxy-cycle gating to determine timing instead of a fixed delay.
+- `[data].poll_after_proxy_cycle = true` ties scheduled Renogy reads to proxy
+  airtime: the next read waits until the scanner has resumed and held the air
+  for `poll_cycle_dwell_seconds` (defaults to 1s). Set `poll_cycle_timeout_seconds`
+  if the adapter occasionally needs longer to resume scanning.
 - `scan_mode = passive` (optional) keeps the host from issuing active scan
   requests, which cuts down on radio chatter if you choose to enable it.
 - `scan_active_seconds` / `scan_idle_seconds` let you apply a light duty cycle

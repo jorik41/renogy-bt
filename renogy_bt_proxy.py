@@ -53,6 +53,15 @@ def _is_in_progress_error(exc: Exception) -> bool:
     return "InProgress" in message or "in progress" in message
 
 
+def _is_not_ready_error(exc: Exception) -> bool:
+    """Return True if the exception indicates the adapter is not ready yet."""
+    if isinstance(exc, BleakDBusError):
+        if exc.dbus_error == "org.bluez.Error.NotReady":
+            return True
+    message = str(exc)
+    return "NotReady" in message or "Not Ready" in message
+
+
 async def _power_cycle_adapter(adapter: str, delay: float = 1.0) -> None:
     """Toggle the BlueZ adapter power to recover from stuck discovery."""
     path = f"/org/bluez/{adapter}"
@@ -93,6 +102,7 @@ class ScannerSupervisor:
         self._pause_tokens = 0
         self._duty_task: Optional[asyncio.Task] = None
         self._shutdown = False
+        self._retry_handle: Optional[asyncio.Handle] = None
 
     @property
     def duty_cycle_enabled(self) -> bool:
@@ -145,6 +155,7 @@ class ScannerSupervisor:
 
     async def shutdown(self) -> None:
         self._shutdown = True
+        self._cancel_start_retry()
         if self._duty_task:
             self._duty_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -183,9 +194,18 @@ class ScannerSupervisor:
                     )
                     self._running = True
                     return
+                if _is_not_ready_error(exc):
+                    logger.warning(
+                        "BLE scanner not ready when starting (%s): %s",
+                        reason,
+                        exc,
+                    )
+                    self._schedule_start_retry(f"retry:{reason}")
+                    return
                 logger.error("Failed to start BLE scanner (%s): %s", reason, exc)
                 raise
             self._running = True
+            self._cancel_start_retry()
             logger.debug("BLE scanner started (%s)", reason)
         else:
             if not self._running:
@@ -204,6 +224,7 @@ class ScannerSupervisor:
                     logger.error("Failed to stop BLE scanner (%s): %s", reason, exc)
                     raise
             self._running = False
+            self._cancel_start_retry()
             logger.debug("BLE scanner stopped (%s)", reason)
 
     async def _kick(self, reason: str) -> None:
@@ -227,6 +248,29 @@ class ScannerSupervisor:
         except asyncio.CancelledError:
             pass
 
+    def _schedule_start_retry(self, reason: str, delay: float = 2.0) -> None:
+        if self._shutdown:
+            return
+
+        def _retry() -> None:
+            self._retry_handle = None
+            if self._shutdown:
+                return
+            self._loop.create_task(self._ensure_running(reason))
+
+        logger.warning(
+            "Scheduling BLE scanner start retry (%s) in %.1fs",
+            reason,
+            delay,
+        )
+        self._cancel_start_retry()
+        self._retry_handle = self._loop.call_later(delay, _retry)
+
+    def _cancel_start_retry(self) -> None:
+        if self._retry_handle:
+            self._retry_handle.cancel()
+            self._retry_handle = None
+
 
 class AirtimeScheduler:
     """Coordinate BLE scanner airtime between Renogy operations and proxy scanning."""
@@ -238,6 +282,7 @@ class AirtimeScheduler:
         loop: asyncio.AbstractEventLoop,
         resume_window: float,
         settle_time: float,
+        cycle_callback: Optional[Callable[[], None]] = None,
     ) -> None:
         self._supervisor = supervisor
         self._loop = loop
@@ -246,6 +291,7 @@ class AirtimeScheduler:
         self._resume_handle: Optional[asyncio.Handle] = None
         self._window_handle: Optional[asyncio.Handle] = None
         self._pending_reason: Optional[str] = None
+        self._cycle_callback = cycle_callback
 
     def pause(self, reason: str) -> None:
         if not self._supervisor:
@@ -288,6 +334,11 @@ class AirtimeScheduler:
                 logger.debug("AirtimeScheduler resume executing: %s", pending_reason)
                 self._resume_handle = None
                 self._supervisor.resume_from_thread(pending_reason)
+                if self._cycle_callback:
+                    try:
+                        self._cycle_callback()
+                    except Exception:
+                        logger.exception("AirtimeScheduler cycle callback failed")
                 if self._resume_window > 0:
                     logger.debug(
                         "AirtimeScheduler scheduling window pause in %.3fs for %s",
@@ -483,7 +534,7 @@ async def run_proxy(config_path: Path) -> None:
 
     with_renogy_client = config.getboolean(proxy_section, "with_renogy_client", fallback=True)
     renogy_poll_mode = config.get(proxy_section, "renogy_poll_mode", fallback="continuous").lower()
-    renogy_read_interval = config.getfloat(proxy_section, "renogy_read_interval", fallback=60.0)
+    renogy_read_interval = max(0.0, config.getfloat(proxy_section, "renogy_read_interval", fallback=60.0))
     battery_client = None
     battery_future: Optional[asyncio.Future] = None
     battery_stopping = False
@@ -602,6 +653,53 @@ async def run_proxy(config_path: Path) -> None:
 
     loop = asyncio.get_running_loop()
     stop_event = asyncio.Event()
+    poll_cycle_event = asyncio.Event()
+    last_proxy_cycle_time = loop.time()
+    last_renogy_read_time = loop.time() - max(0.0, renogy_read_interval)
+
+    def _mark_proxy_cycle() -> None:
+        nonlocal last_proxy_cycle_time
+        if not poll_after_proxy_cycle:
+            return
+        last_proxy_cycle_time = loop.time()
+        poll_cycle_event.set()
+
+    async def _await_poll_window() -> None:
+        nonlocal last_renogy_read_time
+        if poll_after_proxy_cycle and airtime_scheduler is not None:
+            event_triggered = False
+            if poll_cycle_event.is_set():
+                poll_cycle_event.clear()
+                event_triggered = True
+            else:
+                try:
+                    await asyncio.wait_for(
+                        poll_cycle_event.wait(),
+                        timeout=poll_cycle_timeout,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "Timed out waiting for BLE proxy cycle before Renogy poll; continuing"
+                    )
+                else:
+                    poll_cycle_event.clear()
+                    event_triggered = True
+
+            if event_triggered and poll_cycle_dwell > 0:
+                elapsed = loop.time() - last_proxy_cycle_time
+                if elapsed < poll_cycle_dwell:
+                    await asyncio.sleep(poll_cycle_dwell - elapsed)
+            elif poll_cycle_dwell > 0:
+                await asyncio.sleep(poll_cycle_dwell)
+        # Always enforce minimum interval between reads
+        min_interval = max(0.0, renogy_read_interval)
+        if not poll_after_proxy_cycle and min_interval <= 0:
+            # Prevent busy-looping when interval is unset in continuous scheduling
+            min_interval = 60.0
+        if min_interval > 0:
+            elapsed_since_read = loop.time() - last_renogy_read_time
+            if elapsed_since_read < min_interval:
+                await asyncio.sleep(min_interval - elapsed_since_read)
 
     scan_mode = config.get(proxy_section, "scan_mode", fallback="").strip().lower()
 
@@ -639,6 +737,27 @@ async def run_proxy(config_path: Path) -> None:
         "pause_during_renogy",
         fallback=False,
     )
+
+    poll_after_proxy_cycle = config.getboolean(
+        "data",
+        "poll_after_proxy_cycle",
+        fallback=False,
+    )
+
+    def _get_data_float(option: str, fallback: float) -> float:
+        try:
+            return config.getfloat("data", option, fallback=fallback)
+        except ValueError:
+            logger.warning(
+                "Invalid value for data.%s; falling back to %.2f",
+                option,
+                fallback,
+            )
+            return fallback
+
+    poll_cycle_dwell = max(0.0, _get_data_float("poll_cycle_dwell_seconds", 1.0))
+    poll_cycle_timeout = max(5.0, _get_data_float("poll_cycle_timeout_seconds", 30.0))
+    renogy_read_timeout = max(20.0, _get_data_float("renogy_read_timeout_seconds", 45.0))
 
     scanner_kwargs = {
         "detection_callback": on_ble_advertisement,
@@ -679,6 +798,7 @@ async def run_proxy(config_path: Path) -> None:
             loop=loop,
             resume_window=airtime_window,
             settle_time=airtime_settle,
+            cycle_callback=_mark_proxy_cycle if poll_after_proxy_cycle else None,
         )
 
     async def monitor_scanner_health() -> None:
@@ -721,7 +841,7 @@ async def run_proxy(config_path: Path) -> None:
             return
 
     async def start_battery_client() -> None:
-        nonlocal battery_client, battery_future, battery_stopping
+        nonlocal battery_client, battery_future, battery_stopping, last_renogy_read_time
         if not with_renogy_client:
             logger.info("Renogy client disabled by configuration")
             return
@@ -760,6 +880,7 @@ async def run_proxy(config_path: Path) -> None:
                 logger.error("Battery client exited unexpectedly: %s", exc)
 
         battery_future = loop.run_in_executor(None, run_client)
+        last_renogy_read_time = loop.time()
 
         def _battery_done_callback(
             fut: asyncio.Future, client_ref=battery_client
@@ -828,23 +949,29 @@ async def run_proxy(config_path: Path) -> None:
         """Periodically trigger Renogy reads in scheduled mode."""
         if renogy_poll_mode != "scheduled":
             return
-        
+        nonlocal last_renogy_read_time
+
         logger.info(
-            "Renogy scheduled reader enabled (interval=%.1fs)",
+            "Renogy scheduled reader enabled (interval=%.1fs, poll_after_proxy_cycle=%s)",
             renogy_read_interval,
+            poll_after_proxy_cycle and airtime_scheduler is not None,
         )
-        
+
         try:
             while not stop_event.is_set():
-                await asyncio.sleep(renogy_read_interval)
-                
+                await _await_poll_window()
+                if stop_event.is_set():
+                    break
+
                 # Check if previous read is still running
                 if battery_future and not battery_future.done():
                     logger.debug("Skipping scheduled Renogy read - previous read still in progress")
+                    await asyncio.sleep(1.0)
                     continue
-                
+
                 logger.info("Triggering scheduled Renogy read")
                 await start_battery_client()
+                last_renogy_read_time = loop.time()
         except asyncio.CancelledError:
             logger.debug("Renogy scheduler cancelled")
             return
@@ -872,6 +999,10 @@ async def run_proxy(config_path: Path) -> None:
         scanner_task = asyncio.create_task(scanner_supervisor.start())
         logger.info("Scanner supervisor task scheduled")
     else:
+        if poll_after_proxy_cycle:
+            logger.warning(
+                "poll_after_proxy_cycle requested but scanner supervisor is disabled; using time-based scheduling"
+            )
         await scanner.start()
         logger.info("Scanner started without supervisor")
 
@@ -886,7 +1017,7 @@ async def run_proxy(config_path: Path) -> None:
         logger.info(
             (
                 "ESPHome proxy running on adapter %s (port %d, mac %s, "
-                "Renogy client: %s (mode: %s, interval: %.1fs), scan mode: %s, duty cycle: %.1fs/%.1fs, "
+                "Renogy client: %s (mode: %s, interval: %.1fs, proxy_gated: %s), scan mode: %s, duty cycle: %.1fs/%.1fs, "
                 "autopause: %s)"
             ),
             adapter,
@@ -895,6 +1026,7 @@ async def run_proxy(config_path: Path) -> None:
             "enabled" if with_renogy_client else "disabled",
             renogy_poll_mode,
             renogy_read_interval,
+            "on" if (poll_after_proxy_cycle and airtime_scheduler is not None) else "off",
             scanner_kwargs.get("scanning_mode", "default"),
             scan_active,
             scan_idle,

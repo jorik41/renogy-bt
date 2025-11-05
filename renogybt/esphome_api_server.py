@@ -194,6 +194,13 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
         responses: List[Message] = []
 
         if isinstance(message, HelloRequest):
+            logger.info(
+                "ESPHome Hello from %s (api %s.%s, encryption=%s)",
+                message.client_info,
+                message.api_version_major,
+                message.api_version_minor,
+                getattr(message, "supports_encryption", False),
+            )
             responses.append(
                 HelloResponse(
                     api_version_major=1,
@@ -203,7 +210,7 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
                 )
             )
         elif isinstance(message, AuthenticationRequest):
-            responses.append(AuthenticationResponse())
+            responses.append(AuthenticationResponse(invalid_password=False))
             logger.info("ESPHome client authenticated (no password)")
         elif isinstance(message, DisconnectRequest):
             responses.append(DisconnectResponse())
