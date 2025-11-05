@@ -3,11 +3,12 @@
 Comprehensive ESPHome Native API Test Suite
 Tests handshake protocol, data validation, and BLE proxy functionality
 """
-import asyncio
+import argparse
+import re
 import socket
-import struct
 import sys
 import time
+import traceback
 from typing import Optional, Tuple, Dict, List
 from dataclasses import dataclass
 
@@ -121,7 +122,6 @@ class ProtocolValidator:
             return False, "Device name parts cannot be empty"
         
         # Check for valid characters (alphanumeric, hyphen, underscore, dot)
-        import re
         if not re.match(r'^[a-zA-Z0-9._-]+$', name):
             return False, "Device name contains invalid characters"
         
@@ -133,7 +133,6 @@ class ProtocolValidator:
         if not mac:
             return False, "MAC address cannot be empty"
         
-        import re
         # Accept both : and - separators
         if not re.match(r'^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$', mac):
             return False, f"Invalid MAC address format: {mac}"
@@ -411,7 +410,6 @@ class ESPHomeTestClient:
             
         except Exception as e:
             print_fail(f"Handshake error: {e}")
-            import traceback
             traceback.print_exc()
             self.test_results['handshake'] = False
             return False
@@ -489,7 +487,6 @@ class ESPHomeTestClient:
             
         except Exception as e:
             print_fail(f"DeviceInfo test error: {e}")
-            import traceback
             traceback.print_exc()
             self.test_results['device_info'] = False
             return False
@@ -548,7 +545,6 @@ class ESPHomeTestClient:
             
         except Exception as e:
             print_fail(f"BLE subscription test error: {e}")
-            import traceback
             traceback.print_exc()
             self.test_results['ble_subscription'] = False
             return False
@@ -615,8 +611,6 @@ class ESPHomeTestClient:
 
 def main():
     """Main entry point"""
-    import argparse
-    
     parser = argparse.ArgumentParser(
         description="Comprehensive ESPHome Native API test suite",
         formatter_class=argparse.RawDescriptionHelpFormatter,

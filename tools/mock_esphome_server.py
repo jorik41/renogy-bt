@@ -3,6 +3,7 @@
 Mock ESPHome API Server for Testing
 Implements minimal handshake for testing the comprehensive test suite
 """
+import argparse
 import asyncio
 import sys
 from typing import Optional
@@ -223,8 +224,6 @@ async def run_server(host: str = "localhost", port: int = 6053,
 
 def main():
     """Main entry point"""
-    import argparse
-    
     parser = argparse.ArgumentParser(description="Mock ESPHome API server for testing")
     parser.add_argument('--host', default='localhost', help='Listen host (default: localhost)')
     parser.add_argument('--port', type=int, default=6053, help='Listen port (default: 6053)')

@@ -6,7 +6,7 @@ Runs mock server and tests against it
 import subprocess
 import sys
 import time
-import signal
+import traceback
 
 def run_integration_test():
     """Run integration test with mock server"""
@@ -85,6 +85,5 @@ if __name__ == "__main__":
         sys.exit(130)
     except Exception as e:
         print(f"\n✗ Integration test error: {e}")
-        import traceback
         traceback.print_exc()
         sys.exit(1)
