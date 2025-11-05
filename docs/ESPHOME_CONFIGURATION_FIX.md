@@ -27,14 +27,21 @@ Modified the ESPHome API server to use `transport.writelines()` for sending mult
 
 **Code Change** (`renogybt/esphome_api_server.py`):
 ```python
-# BEFORE (multiple individual writes - subject to TCP buffering)
+# BEFORE (individual writes - subject to TCP buffering)
 for packet in packets:
     self._transport.write(packet)
 
-# AFTER (batch write - immediate delivery)
-if self._writelines and len(packets) > 1:
+# AFTER (batch write with writelines - immediate delivery)
+if self._writelines:
+    # Use writelines for ALL packets (even single ones) to force immediate delivery
     self._writelines(packets)
+else:
+    # Fallback only if writelines not available
+    for packet in packets:
+        self._transport.write(packet)
 ```
+
+The key improvement is using `writelines()` for ALL packets, not just multiple packets. This forces TCP to send immediately with the PSH flag, eliminating any buffering delay.
 
 ## Impact
 - **Latency Reduction**: Response time during configuration reduced from hundreds of milliseconds to tens of milliseconds
