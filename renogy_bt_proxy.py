@@ -30,6 +30,8 @@ from renogybt import (
     RoverClient,
     RoverHistoryClient,
     Utils,
+    create_sensor_entities_from_data,
+    update_sensor_entities,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -407,13 +409,21 @@ def _determine_proxy_mac(config: configparser.ConfigParser) -> str:
     return _format_mac(node)
 
 
-def _create_client(config: configparser.ConfigParser, data_logger: DataLogger, scheduled_mode: bool = False):
+def _create_client(
+    config: configparser.ConfigParser,
+    data_logger: DataLogger,
+    api_server: Optional[ESPHomeAPIServer] = None,
+    scheduled_mode: bool = False,
+):
     """Instantiate the appropriate Renogy client."""
 
     alias = config["device"]["alias"]
     battery_map: Dict[int, Dict[str, object]] = {}
+    sensor_entities_initialized = False
 
     def on_data_received(client, data):
+        nonlocal sensor_entities_initialized
+        
         Utils.add_calculated_values(data)
         dev_id = data.get("device_id")
         alias_id = f"{alias}_{dev_id}" if dev_id is not None else alias
@@ -429,6 +439,25 @@ def _create_client(config: configparser.ConfigParser, data_logger: DataLogger, s
         filtered_data = Utils.filter_fields(data, fields)
         logger.info("%s => %s", client.ble_manager.device.name, filtered_data)
 
+        # Initialize sensor entities on first data read
+        if api_server is not None and not sensor_entities_initialized:
+            try:
+                temp_unit = config["data"].get("temperature_unit", fallback="C")
+                entities = create_sensor_entities_from_data(filtered_data, alias_id, temp_unit)
+                api_server.set_sensor_entities(entities)
+                sensor_entities_initialized = True
+                logger.info("Initialized %d sensor entities for ESPHome API", len(entities))
+            except Exception as exc:
+                logger.error("Failed to initialize sensor entities: %s", exc)
+
+        # Send sensor states to ESPHome API if enabled
+        if api_server is not None:
+            try:
+                api_server.send_sensor_states(filtered_data)
+                logger.debug("Sent sensor states to ESPHome API")
+            except Exception as exc:
+                logger.error("Failed to send sensor states: %s", exc)
+
         if config["device"]["type"] == "RNG_BATT" and len(client.device_ids) > 1:
             if dev_id is not None:
                 battery_map[dev_id] = data
@@ -436,6 +465,12 @@ def _create_client(config: configparser.ConfigParser, data_logger: DataLogger, s
                 combined = Utils.combine_battery_readings(battery_map)
                 filtered_combined = Utils.filter_fields(combined, fields)
                 logger.info("combined => %s", filtered_combined)
+                # Send combined data to ESPHome API
+                if api_server is not None:
+                    try:
+                        api_server.send_sensor_states(filtered_combined)
+                    except Exception as exc:
+                        logger.error("Failed to send combined sensor states: %s", exc)
                 if config["mqtt"].getboolean("enabled"):
                     data_logger.log_mqtt(json_data=filtered_combined)
                 battery_map.clear()
@@ -527,6 +562,9 @@ async def run_proxy(config_path: Path) -> None:
     device_name = config.get(proxy_section, "device_name", fallback="renogy-bt-proxy")
     native_port = config.getint(proxy_section, "native_api_port", fallback=6053)
     proxy_mac = _determine_proxy_mac(config)
+    
+    # Check if ESPHome API sensors are enabled
+    esphome_sensors_enabled = config.getboolean(proxy_section, "esphome_sensors", fallback=True)
 
     energy_file = str((config_path.parent / "energy_totals.json").resolve())
     config["device"]["energy_file"] = energy_file
@@ -853,7 +891,7 @@ async def run_proxy(config_path: Path) -> None:
         
         # For scheduled mode, create client with scheduled_mode=True to stop after one read
         scheduled = renogy_poll_mode == "scheduled"
-        battery_client = _create_client(config, data_logger, scheduled_mode=scheduled)
+        battery_client = _create_client(config, data_logger, api_server, scheduled_mode=scheduled)
         setattr(battery_client, "last_error", None)
 
         if airtime_scheduler:
