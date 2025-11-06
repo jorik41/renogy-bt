@@ -443,7 +443,9 @@ def _create_client(
         if api_server is not None and alias_id not in sensor_entities_initialized_ids:
             try:
                 temp_unit = config["data"].get("temperature_unit", fallback="C")
-                entities = create_sensor_entities_from_data(filtered_data, alias_id, temp_unit)
+                device_num = dev_id if isinstance(dev_id, int) else 48
+                base_key = 1000 + (device_num - 48) * 1000
+                entities = create_sensor_entities_from_data(filtered_data, alias_id, temp_unit, base_key)
                 api_server.set_sensor_entities(entities)
                 sensor_entities_initialized_ids.add(alias_id)
                 logger.info("Initialized %d sensor entities for ESPHome API", len(entities))
@@ -470,7 +472,7 @@ def _create_client(
                 if api_server is not None and combined_alias not in sensor_entities_initialized_ids:
                     try:
                         temp_unit = config["data"].get("temperature_unit", fallback="C")
-                        entities = create_sensor_entities_from_data(filtered_combined, combined_alias, temp_unit)
+                        entities = create_sensor_entities_from_data(filtered_combined, combined_alias, temp_unit, base_key=5000)
                         api_server.set_sensor_entities(entities)
                         sensor_entities_initialized_ids.add(combined_alias)
                         logger.info("Initialized %d sensor entities for combined data (total: %d)", len(entities), len(api_server._sensor_entities))
