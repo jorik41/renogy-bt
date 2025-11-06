@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import socket
 import logging
 from typing import Callable, Dict, List, Optional, Type
 
@@ -665,7 +666,13 @@ class ESPHomeAPIServer:
             self._active_protocols.append(protocol)
             return protocol
 
-        self._server = await loop.create_server(factory, host="0.0.0.0", port=self.port)
+        # Create server with SO_REUSEADDR to allow quick restart
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(("0.0.0.0", self.port))
+        sock.listen(5)
+        sock.setblocking(False)
+        self._server = await loop.create_server(factory, sock=sock)
         logger.info("ESPHome native API server listening on %d", self.port)
 
     def _remove_protocol(self, protocol: ESPHomeAPIProtocol) -> None:
