@@ -473,7 +473,7 @@ def _create_client(
                         entities = create_sensor_entities_from_data(filtered_combined, combined_alias, temp_unit)
                         api_server.set_sensor_entities(entities)
                         sensor_entities_initialized_ids.add(combined_alias)
-                        logger.info("Initialized %d sensor entities for combined data (total: %d)", len(entities), len(api_server._sensor_entities))
+                        logger.info("Initialized %d sensor entities for combined data", len(entities))
                     except Exception as exc:
                         logger.error("Failed to initialize combined sensor entities: %s", exc)
                 # Send combined data to ESPHome API
@@ -482,10 +482,14 @@ def _create_client(
                         api_server.send_sensor_states(filtered_combined)
                     except Exception as exc:
                         logger.error("Failed to send combined sensor states: %s", exc)
+                if config["mqtt"].getboolean("enabled"):
+                    data_logger.log_mqtt(json_data=filtered_combined)
                 battery_map.clear()
 
         if config["remote_logging"].getboolean("enabled"):
             data_logger.log_remote(json_data=filtered_data)
+        if config["mqtt"].getboolean("enabled"):
+            data_logger.log_mqtt(json_data=filtered_data)
         if (
             config["pvoutput"].getboolean("enabled")
             and config["device"]["type"] == "RNG_CTRL"

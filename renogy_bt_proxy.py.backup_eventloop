@@ -473,7 +473,7 @@ def _create_client(
                         entities = create_sensor_entities_from_data(filtered_combined, combined_alias, temp_unit)
                         api_server.set_sensor_entities(entities)
                         sensor_entities_initialized_ids.add(combined_alias)
-                        logger.info("Initialized %d sensor entities for combined data (total: %d)", len(entities), len(api_server._sensor_entities))
+                        logger.info("Initialized %d sensor entities for combined data", len(entities))
                     except Exception as exc:
                         logger.error("Failed to initialize combined sensor entities: %s", exc)
                 # Send combined data to ESPHome API
@@ -482,10 +482,14 @@ def _create_client(
                         api_server.send_sensor_states(filtered_combined)
                     except Exception as exc:
                         logger.error("Failed to send combined sensor states: %s", exc)
+                if config["mqtt"].getboolean("enabled"):
+                    data_logger.log_mqtt(json_data=filtered_combined)
                 battery_map.clear()
 
         if config["remote_logging"].getboolean("enabled"):
             data_logger.log_remote(json_data=filtered_data)
+        if config["mqtt"].getboolean("enabled"):
+            data_logger.log_mqtt(json_data=filtered_data)
         if (
             config["pvoutput"].getboolean("enabled")
             and config["device"]["type"] == "RNG_CTRL"
@@ -552,16 +556,6 @@ def _ble_packet_to_dict(device: BLEDevice, advertisement: AdvertisementData) -> 
 
 
 async def run_proxy(config_path: Path) -> None:
-    """Main proxy coroutine with event loop responsiveness improvements."""
-    
-    async def event_loop_heartbeat():
-        """Periodic task to keep event loop responsive."""
-        try:
-            while True:
-                await asyncio.sleep(0.05)  # Yield every 50ms
-        except asyncio.CancelledError:
-            pass
-    
     config = configparser.ConfigParser(inline_comment_prefixes=("#",))
     config.read(config_path)
 
@@ -696,9 +690,6 @@ async def run_proxy(config_path: Path) -> None:
         if device.name and ADAPTER_NAME_PATTERN.match(device.name):
             return
         total_advertisements += 1
-        # Yield to event loop every 5 advertisements to prevent blocking
-        if total_advertisements % 5 == 0:
-            loop.call_soon_threadsafe(lambda: None)
         last_adv_timestamp = loop.time()
         logger.info(
             "BLE advertisement: %s (%s) rssi=%s",
@@ -1052,9 +1043,6 @@ async def run_proxy(config_path: Path) -> None:
     if with_renogy_client and renogy_poll_mode == "scheduled":
         renogy_scheduler_task = asyncio.create_task(scheduled_renogy_reader())
 
-    # Start heartbeat task to ensure event loop stays responsive
-    heartbeat_task = asyncio.create_task(event_loop_heartbeat())
-    
     await api_server.start()
     await discovery.start()
     if scanner_supervisor:

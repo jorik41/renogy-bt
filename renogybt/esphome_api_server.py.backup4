@@ -131,9 +131,6 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
     # asyncio.Protocol API -------------------------------------------------
 
     def connection_made(self, transport: asyncio.Transport) -> None:
-        import sys
-        sys.stderr.write(f'DEBUG: connection_made called! transport={transport}\n')
-        sys.stderr.flush()
         self._transport = transport
         self._writelines = transport.writelines  # type: ignore[attr-defined]
         peer = transport.get_extra_info("peername")
@@ -543,29 +540,21 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
             logger.error("Failed to send sensor states: %s", exc, exc_info=True)
 
     def _send_messages(self, messages: List[Message]) -> None:
-        # Use writelines() to send all packets in a single operation for better latency
+        # Guard on transport instead of writelines since we use write() below.
         if not self._transport:
             return
 
         try:
-            packets = []
+            packets = [
+                (PROTO_TO_MESSAGE_TYPE[msg.__class__], msg.SerializeToString())
+                for msg in messages
+            ]
             for msg in messages:
                 logger.debug("Sending ESPHome message: %s", msg.__class__.__name__)
-                msg_type = PROTO_TO_MESSAGE_TYPE[msg.__class__]
-                payload = msg.SerializeToString()
+            for msg_type, payload in packets:
                 packet = _make_packet(msg_type, payload)
                 logger.debug("ESPHome packet bytes (len=%d): %s", len(payload), payload.hex())
-                packets.append(packet)
-            
-            # Send all packets at once to reduce TCP buffering delays
-            if packets:
-                if self._writelines:
-                    # Use writelines for all packets (even single ones) to minimize latency
-                    self._writelines(packets)
-                else:
-                    # Fallback to individual writes if writelines not available
-                    for packet in packets:
-                        self._transport.write(packet)  # type: ignore[union-attr]
+                self._transport.write(packet)  # type: ignore[union-attr]
         except Exception as exc:  # pragma: no cover - defensive
             logger.error("Failed to send ESPHome messages: %s", exc, exc_info=True)
 

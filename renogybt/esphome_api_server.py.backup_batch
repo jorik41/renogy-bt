@@ -131,9 +131,6 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
     # asyncio.Protocol API -------------------------------------------------
 
     def connection_made(self, transport: asyncio.Transport) -> None:
-        import sys
-        sys.stderr.write(f'DEBUG: connection_made called! transport={transport}\n')
-        sys.stderr.flush()
         self._transport = transport
         self._writelines = transport.writelines  # type: ignore[attr-defined]
         peer = transport.get_extra_info("peername")
