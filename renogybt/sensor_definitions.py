@@ -7,6 +7,27 @@ from typing import Dict
 from aioesphomeapi.api_pb2 import SensorStateClass
 
 
+# List of important sensor keys to expose as entities
+IMPORTANT_SENSORS = {
+    'power', 'voltage', 'current', 'battery_level', 'remaining_charge', 'capacity',
+    'energy_in_kwh', 'energy_out_kwh',
+    'combined_power', 'combined_current', 'combined_capacity',
+    'combined_remaining_charge', 'combined_charge_percentage',
+    'combined_energy_in_kwh', 'combined_energy_out_kwh',
+}
+
+def _should_create_sensor(data_key: str) -> bool:
+    """Determine if a data key should get its own sensor entity."""
+    if data_key in IMPORTANT_SENSORS:
+        return True
+    if any(data_key.startswith(f'battery_{i}_') for i in range(48, 52)):
+        field = data_key.split('_', 2)[-1] if data_key.count('_') >= 2 else ''
+        if field in ['cell_voltage_min', 'cell_voltage_max', 'temperature_min', 'temperature_max']:
+            return True
+    return False
+
+
+
 def _guess_sensor_attributes(key: str, temp_unit: str = 'C') -> Dict[str, object]:
     """Guess sensor attributes (unit, device_class, etc.) based on the key name."""
     lkey = key.lower()
@@ -113,6 +134,10 @@ def create_sensor_entities_from_data(
         if data_key.startswith('_'):
             continue
         if data_key in ['function', 'device_id']:
+            continue
+        
+        # Only create sensors for important fields
+        if not _should_create_sensor(data_key):
             continue
         
         # Get sensor attributes

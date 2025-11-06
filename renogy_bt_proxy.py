@@ -556,6 +556,16 @@ def _ble_packet_to_dict(device: BLEDevice, advertisement: AdvertisementData) -> 
 
 
 async def run_proxy(config_path: Path) -> None:
+    """Main proxy coroutine with event loop responsiveness improvements."""
+    
+    async def event_loop_heartbeat():
+        """Periodic task to keep event loop responsive."""
+        try:
+            while True:
+                await asyncio.sleep(0.05)  # Yield every 50ms
+        except asyncio.CancelledError:
+            pass
+    
     config = configparser.ConfigParser(inline_comment_prefixes=("#",))
     config.read(config_path)
 
@@ -690,6 +700,9 @@ async def run_proxy(config_path: Path) -> None:
         if device.name and ADAPTER_NAME_PATTERN.match(device.name):
             return
         total_advertisements += 1
+        # Yield to event loop every 5 advertisements to prevent blocking
+        if total_advertisements % 5 == 0:
+            loop.call_soon_threadsafe(lambda: None)
         last_adv_timestamp = loop.time()
         logger.info(
             "BLE advertisement: %s (%s) rssi=%s",
@@ -1043,6 +1056,9 @@ async def run_proxy(config_path: Path) -> None:
     if with_renogy_client and renogy_poll_mode == "scheduled":
         renogy_scheduler_task = asyncio.create_task(scheduled_renogy_reader())
 
+    # Start heartbeat task to ensure event loop stays responsive
+    heartbeat_task = asyncio.create_task(event_loop_heartbeat())
+    
     await api_server.start()
     await discovery.start()
     if scanner_supervisor:
