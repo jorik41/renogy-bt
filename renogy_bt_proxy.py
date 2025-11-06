@@ -693,6 +693,7 @@ async def run_proxy(config_path: Path) -> None:
 
     def on_ble_advertisement(device: BLEDevice, advertisement: AdvertisementData) -> None:
         nonlocal total_advertisements, last_adv_timestamp
+        logger.debug(f"on_ble_advertisement called: device={device.address}, callback={'SET' if send_advertisement_callback else 'None'}")
         if not send_advertisement_callback:
             return
         if device.name and ADAPTER_NAME_PATTERN.match(device.name):
