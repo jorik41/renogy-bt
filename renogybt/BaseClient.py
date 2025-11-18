@@ -221,7 +221,9 @@ class BaseClient:
                 self._notify_ble_activity(False, "reconnect")
         if not self.ble_manager.client or not self.ble_manager.client.is_connected:
             raise BleakError("Client is not connected")
-        self._notify_ble_activity(True, f"read:{self.sections[index]['register']}")
+        # FIX: Don't pause for individual register reads - too granular
+        # Only pause once for the entire read cycle (done in connect/discover)
+        # self._notify_ble_activity(True, f"read:{self.sections[index]['register']}")
         try:
             await self.ble_manager.characteristic_write_value(request)
         except BleakError as exc:

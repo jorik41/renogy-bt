@@ -414,6 +414,7 @@ def _create_client(
     data_logger: DataLogger,
     api_server: Optional[ESPHomeAPIServer] = None,
     scheduled_mode: bool = False,
+    failure_counter: Optional[List[int]] = None,  # Pass failure counter as mutable list
 ):
     """Instantiate the appropriate Renogy client."""
 
@@ -423,6 +424,11 @@ def _create_client(
 
     def on_data_received(client, data):
         nonlocal sensor_entities_initialized_ids
+        
+        # Reset failure counter on successful data read
+        if failure_counter and failure_counter[0] > 0:
+            logger.info("Renogy connection successful - resetting failure counter (was %d)", failure_counter[0])
+            failure_counter[0] = 0
         
         Utils.add_calculated_values(data)
         dev_id = data.get("device_id")
@@ -446,7 +452,8 @@ def _create_client(
                 device_num = dev_id if isinstance(dev_id, int) else 48
                 base_key = 1000 + (device_num - 48) * 1000
                 entities = create_sensor_entities_from_data(filtered_data, alias_id, temp_unit, base_key)
-                api_server.set_sensor_entities(entities)
+                # Merge entities for multiple batteries, don't replace
+                api_server.set_sensor_entities(entities, replace=False)
                 sensor_entities_initialized_ids.add(alias_id)
                 logger.info("Initialized %d sensor entities for ESPHome API", len(entities))
             except Exception as exc:
@@ -473,9 +480,18 @@ def _create_client(
                     try:
                         temp_unit = config["data"].get("temperature_unit", fallback="C")
                         entities = create_sensor_entities_from_data(filtered_combined, combined_alias, temp_unit, base_key=5000)
-                        api_server.set_sensor_entities(entities)
+                        # Merge combined entities with individual battery entities
+                        api_server.set_sensor_entities(entities, replace=False)
                         sensor_entities_initialized_ids.add(combined_alias)
                         logger.info("Initialized %d sensor entities for combined data (total: %d)", len(entities), len(api_server._sensor_entities))
+                        
+                        # Force HA to reconnect now that ALL entities are configured
+                        logger.warning("All battery entities configured - disconnecting clients to force full re-discovery")
+                        for protocol in list(api_server._active_protocols):
+                            try:
+                                protocol._transport.close()
+                            except Exception:
+                                pass
                     except Exception as exc:
                         logger.error("Failed to initialize combined sensor entities: %s", exc)
                 # Send combined data to ESPHome API
@@ -493,12 +509,36 @@ def _create_client(
             and config["device"]["type"] == "RNG_CTRL"
         ):
             data_logger.log_pvoutput(json_data=filtered_data)
-        # In scheduled mode, always stop after one read; in continuous mode, check config
+        
+        # In scheduled mode, stop after reading all batteries (not just one)
+        # For multi-battery setups, wait until all batteries are read
+        should_stop = False
         if scheduled_mode or not config["data"].getboolean("enable_polling"):
+            # If multi-battery setup, only stop after all batteries are read
+            if config["device"]["type"] == "RNG_BATT" and len(client.device_ids) > 1:
+                # battery_map was already populated above at line 471
+                if len(battery_map) >= len(client.device_ids):
+                    should_stop = True
+                    logger.info("All %d batteries read, stopping client", len(client.device_ids))
+            else:
+                # Single battery or non-battery device, stop immediately
+                should_stop = True
+        
+        if should_stop:
             client.stop()
 
     def on_error(client, error):
         logger.error("Proxy battery client error: %s", error)
+        
+        # Check if this is a discovery/connection failure and update counter if provided
+        if failure_counter:
+            error_str = str(error).lower()
+            if "discovery" in error_str or "connection" in error_str or "connect" in error_str:
+                failure_counter[0] += 1
+                logger.warning(
+                    "Renogy connection failure count: %d",
+                    failure_counter[0]
+                )
 
     device_type = config["device"].get("type", "").upper()
 
@@ -598,6 +638,9 @@ async def run_proxy(config_path: Path) -> None:
     battery_restart_lock = asyncio.Lock()
     last_battery_restart: float = 0.0
     consecutive_timeouts = 0
+    consecutive_failures_list = [0]  # Use list for mutable reference
+    bt_reset_threshold = 3  # Reset BT after this many consecutive failures
+    last_bt_reset: float = 0.0
     renogy_scheduler_task: Optional[asyncio.Task] = None
 
     async def _restart_battery_client(
@@ -742,6 +785,8 @@ async def run_proxy(config_path: Path) -> None:
                     logger.warning(
                         "Timed out waiting for BLE proxy cycle before Renogy poll; continuing"
                     )
+                    # FIX: On timeout, manually trigger a proxy cycle marker so we don't get stuck
+                    _mark_proxy_cycle()
                 else:
                     poll_cycle_event.clear()
                     event_triggered = True
@@ -902,7 +947,7 @@ async def run_proxy(config_path: Path) -> None:
             return
 
     async def start_battery_client() -> None:
-        nonlocal battery_client, battery_future, battery_stopping, last_renogy_read_time
+        nonlocal battery_client, battery_future, battery_stopping, last_renogy_read_time, last_bt_reset
         if not with_renogy_client:
             logger.info("Renogy client disabled by configuration")
             return
@@ -916,8 +961,26 @@ async def run_proxy(config_path: Path) -> None:
         scheduled = renogy_poll_mode == "scheduled"
         # Only pass api_server if ESPHome sensors are enabled
         api_server_arg = api_server if esphome_sensors_enabled else None
-        battery_client = _create_client(config, data_logger, api_server_arg, scheduled_mode=scheduled)
+        battery_client = _create_client(config, data_logger, api_server_arg, scheduled_mode=scheduled, failure_counter=consecutive_failures_list)
         setattr(battery_client, "last_error", None)
+        
+        # Check if we need to reset BT adapter due to consecutive failures
+        if consecutive_failures_list[0] >= bt_reset_threshold:
+            current_time = loop.time()
+            if current_time - last_bt_reset > 60.0:  # Rate limit to once per minute
+                logger.warning(
+                    "Consecutive failure threshold (%d) reached - resetting BT adapter %s",
+                    bt_reset_threshold,
+                    adapter
+                )
+                last_bt_reset = current_time
+                consecutive_failures_list[0] = 0  # Reset counter
+                try:
+                    await _power_cycle_adapter(adapter, delay=2.0)
+                    await asyncio.sleep(3.0)  # Wait for adapter to stabilize
+                    logger.info("BT adapter reset complete")
+                except Exception as exc:
+                    logger.error("BT adapter reset failed: %s", exc)
 
         if airtime_scheduler:
             def handle_ble_activity(request_pause: bool, stage: str) -> None:
@@ -937,10 +1000,25 @@ async def run_proxy(config_path: Path) -> None:
             battery_client.set_ble_activity_callback(handle_ble_activity_legacy)
 
         def run_client() -> None:
+            """Run the battery client in executor thread.
+            
+            FIX: Ensure we're running in the same process and not spawning subprocesses.
+            The BatteryClient.start() should run synchronously in this thread.
+            """
+            import os
+            import sys
+            current_pid = os.getpid()
+            logger.debug(f"Battery client starting in PID {current_pid}")
+            
             try:
                 battery_client.start()
             except Exception as exc:  # pragma: no cover - defensive
                 logger.error("Battery client exited unexpectedly: %s", exc)
+            finally:
+                # Verify we're still in the same process
+                if os.getpid() != current_pid:
+                    logger.error(f"CRITICAL: Battery client changed PID from {current_pid} to {os.getpid()}!")
+                    sys.exit(1)
 
         battery_future = loop.run_in_executor(None, run_client)
         last_renogy_read_time = loop.time()
@@ -978,7 +1056,7 @@ async def run_proxy(config_path: Path) -> None:
         logger.info("Renogy client started in background executor")
         if scanner_supervisor and not pause_during_renogy:
             scanner_supervisor.kick_from_thread("renogy-start")
-
+    
     async def stop_battery_client() -> None:
         nonlocal battery_client, battery_future, battery_stopping
         if not battery_client:
@@ -989,7 +1067,12 @@ async def run_proxy(config_path: Path) -> None:
         except Exception as exc:  # pragma: no cover - best effort
             logger.warning("Error stopping battery client: %s", exc)
         if battery_future:
-            await asyncio.wrap_future(battery_future)
+            try:
+                await asyncio.wait_for(asyncio.wrap_future(battery_future), timeout=5.0)
+            except asyncio.TimeoutError:
+                logger.warning("Battery client stop timed out after 5s")
+                # FIX: Cancel the future to prevent it from running indefinitely
+                battery_future.cancel()
         battery_client = None
         battery_future = None
         battery_stopping = False
@@ -1064,6 +1147,11 @@ async def run_proxy(config_path: Path) -> None:
         logger.info("Starting scanner supervisor")
         scanner_task = asyncio.create_task(scanner_supervisor.start())
         logger.info("Scanner supervisor task scheduled")
+        # FIX: Explicitly start scanning after a short delay to allow initialization
+        # The scanner.start() in supervisor may not trigger if pause_tokens > 0
+        await asyncio.sleep(0.5)
+        logger.info("Triggering initial scanner start")
+        await scanner_supervisor._ensure_running("explicit-initial-start")
     else:
         if poll_after_proxy_cycle:
             logger.warning(
@@ -1071,6 +1159,11 @@ async def run_proxy(config_path: Path) -> None:
             )
         await scanner.start()
         logger.info("Scanner started without supervisor")
+
+    # FIX: Trigger initial proxy cycle to unblock scheduled Renogy reads
+    if poll_after_proxy_cycle and with_renogy_client:
+        logger.info("Triggering initial proxy cycle marker")
+        _mark_proxy_cycle()
 
     # In continuous mode, start client immediately; in scheduled mode, the scheduler will trigger it
     if renogy_poll_mode == "continuous":
