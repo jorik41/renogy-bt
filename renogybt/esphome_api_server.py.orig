@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import socket
 import logging
 from typing import Callable, Dict, List, Optional, Type
 
+from aioesphomeapi._frame_helper.packets import make_plain_text_packets
 from aioesphomeapi.api_pb2 import (  # type: ignore[attr-defined]
     AuthenticationRequest,
     AuthenticationResponse,
@@ -26,16 +26,12 @@ from aioesphomeapi.api_pb2 import (  # type: ignore[attr-defined]
     HelloResponse,
     ListEntitiesDoneResponse,
     ListEntitiesRequest,
-    ListEntitiesSensorResponse,
     NoiseEncryptionSetKeyRequest,
     NoiseEncryptionSetKeyResponse,
     PingRequest,
     PingResponse,
-    SensorStateClass,
-    SensorStateResponse,
     SubscribeBluetoothConnectionsFreeRequest,
     SubscribeBluetoothLEAdvertisementsRequest,
-    SubscribeStatesRequest,
     UnsubscribeBluetoothLEAdvertisementsRequest,
 )
 from aioesphomeapi.core import MESSAGE_TYPE_TO_PROTO
@@ -70,28 +66,6 @@ if not logger.handlers:
     logger.addHandler(logging.NullHandler())
 logger.setLevel(logging.DEBUG)
 
-def _encode_varint(value: int) -> bytes:
-    """Encode an integer as a protobuf varint."""
-    result = bytearray()
-    while value > 0x7F:
-        result.append((value & 0x7F) | 0x80)
-        value >>= 7
-    result.append(value & 0x7F)
-    return bytes(result)
-
-def _make_packet(msg_type: int, payload: bytes) -> bytes:
-    """Create a single ESPHome API packet.
-    
-    In the modern ESPHome protocol (aioesphomeapi 42.x+), the length field
-    represents ONLY the payload size, not including the msg_type varint.
-    """
-    msg_type_bytes = _encode_varint(msg_type)
-    length = len(payload)  # Only payload size, not including msg_type
-    packet = bytearray([0x00])  # preamble
-    packet.extend(_encode_varint(length))
-    packet.extend(msg_type_bytes)
-    packet.extend(payload)
-    return bytes(packet)
 
 class ESPHomeAPIProtocol(asyncio.Protocol):
     """ESPHome native API protocol handler."""
@@ -102,28 +76,16 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
         mac_address: str,
         version: str = "2024.12.0",
         on_subscribe_callback: Optional[Callable[[Callable[[dict], None]], None]] = None,
-        sensor_entities: Optional[Dict[str, Dict]] = None,
-        on_disconnect: Optional[Callable[[], None]] = None,
     ) -> None:
         self.name = name
         self.mac_address = mac_address
         self.version = version
         self._on_subscribe_callback = on_subscribe_callback
-        self._sensor_entities = sensor_entities or {}
-        # Create reverse mapping for O(1) lookups: data_key -> entity_info
-        self._data_key_to_entity: Dict[str, Dict] = {}
-        for entity_key, entity_info in self._sensor_entities.items():
-            # Map from the actual data key (e.g., 'power') to the entity info
-            if 'data_key' in entity_info:
-                self._data_key_to_entity[entity_info['data_key']] = entity_info
-        self._on_disconnect = on_disconnect
         self._subscribed_to_ble = False
         self._subscribed_to_connections_free = False
-        self._subscribed_to_states = False
         self._scanner_mode = BluetoothScannerMode.BLUETOOTH_SCANNER_MODE_PASSIVE
         self._scanner_state = BluetoothScannerState.BLUETOOTH_SCANNER_STATE_IDLE
         self._buffer: Optional[bytes] = None
-        self._last_sensor_states: Dict[str, float] = {}  # Store last sensor values
         self._buffer_len = 0
         self._pos = 0
         self._transport: Optional[asyncio.Transport] = None
@@ -133,9 +95,6 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
     # asyncio.Protocol API -------------------------------------------------
 
     def connection_made(self, transport: asyncio.Transport) -> None:
-        import sys
-        sys.stderr.write(f'DEBUG: connection_made called! transport={transport}\n')
-        sys.stderr.flush()
         self._transport = transport
         self._writelines = transport.writelines  # type: ignore[attr-defined]
         peer = transport.get_extra_info("peername")
@@ -147,9 +106,6 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
         self._writelines = None
         self._subscribed_to_ble = False
         self._subscribed_to_connections_free = False
-        self._subscribed_to_states = False
-        if self._on_disconnect:
-            self._on_disconnect()
 
     def data_received(self, data: bytes) -> None:
         logger.debug("ESPHome API raw bytes received len=%d: %s", len(data), data[:20].hex())
@@ -177,22 +133,30 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
                 self._close_transport()
                 return
 
+            # Remember position to compute how many bytes the msg_type varint consumes
+            pos_before_msg_type = self._pos
             msg_type = self._read_varuint()
             if msg_type == -1:
                 logger.error("Failed to read message type; closing connection")
                 self._reset_buffer()
                 self._close_transport()
                 return
+            msg_type_len = self._pos - pos_before_msg_type
 
-            # In the modern ESPHome protocol (aioesphomeapi 42.x+), the length field
-            # represents ONLY the payload size, not including the msg_type varint.
-            # This is different from older versions where length = msg_type_size + payload_size.
             if length == 0:
                 self._remove_from_buffer()
                 self._process_packet(msg_type, b"")
                 continue
-            
-            payload_len = length
+            payload_len = length - msg_type_len
+            if payload_len < 0:
+                logger.error(
+                    "Invalid payload length calculated (length=%d, msg_type_len=%d); closing connection",
+                    length,
+                    msg_type_len,
+                )
+                self._reset_buffer()
+                self._close_transport()
+                return
             packet = self._read(payload_len)
             if packet is None:
                 return  # Wait for the rest of the packet
@@ -217,13 +181,6 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
         responses: List[Message] = []
 
         if isinstance(message, HelloRequest):
-            logger.info(
-                "ESPHome Hello from %s (api %s.%s, encryption=%s)",
-                message.client_info,
-                message.api_version_major,
-                message.api_version_minor,
-                getattr(message, "supports_encryption", False),
-            )
             responses.append(
                 HelloResponse(
                     api_version_major=1,
@@ -233,7 +190,7 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
                 )
             )
         elif isinstance(message, AuthenticationRequest):
-            responses.append(AuthenticationResponse(invalid_password=False))
+            responses.append(AuthenticationResponse())
             logger.info("ESPHome client authenticated (no password)")
         elif isinstance(message, DisconnectRequest):
             responses.append(DisconnectResponse())
@@ -260,28 +217,6 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
                 )
             )
         elif isinstance(message, ListEntitiesRequest):
-            # Send sensor entity definitions
-            logger.info("Sending %d sensor entities to Home Assistant", len(self._sensor_entities))
-            for entity_key, entity_info in self._sensor_entities.items():
-                sensor_response = ListEntitiesSensorResponse(
-                    object_id=entity_info.get('object_id', entity_key),
-                    key=entity_info['key'],
-                    name=entity_info.get('name', entity_key),
-                    icon=entity_info.get('icon', ''),
-                    unit_of_measurement=entity_info.get('unit_of_measurement', ''),
-                    accuracy_decimals=entity_info.get('accuracy_decimals', 2),
-                    force_update=entity_info.get('force_update', False),
-                    device_class=entity_info.get('device_class', ''),
-                    state_class=entity_info.get('state_class', SensorStateClass.STATE_CLASS_MEASUREMENT),
-                    disabled_by_default=entity_info.get('disabled_by_default', False),
-                )
-                logger.debug(
-                    "Entity: %s (key=%d, unit=%s)",
-                    entity_info.get('object_id', entity_key),
-                    entity_info['key'],
-                    entity_info.get('unit_of_measurement', '')
-                )
-                responses.append(sensor_response)
             responses.append(ListEntitiesDoneResponse())
         elif isinstance(message, SubscribeBluetoothLEAdvertisementsRequest):
             logger.info("ESPHome client subscribed to BLE advertisements")
@@ -346,13 +281,6 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
                     configured_mode=BluetoothScannerMode.BLUETOOTH_SCANNER_MODE_PASSIVE,
                 )
             )
-        elif isinstance(message, SubscribeStatesRequest):
-            logger.info("ESPHome client subscribed to sensor states")
-            self._subscribed_to_states = True
-            # Resend last known sensor states to new subscriber
-            if self._last_sensor_states:
-                logger.info("Resending %d cached sensor states", len(self._last_sensor_states))
-                self.send_sensor_states(self._last_sensor_states)
         elif isinstance(message, NoiseEncryptionSetKeyRequest):
             logger.info("ESPHome client attempted to set Noise key; rejecting")
             responses.append(NoiseEncryptionSetKeyResponse(success=False))
@@ -531,67 +459,22 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
         except Exception as exc:  # pragma: no cover - defensive
             logger.error("Failed to serialise BLE advertisement: %s", exc, exc_info=True)
 
-    def send_sensor_states(self, sensor_data: Dict[str, float]) -> None:
-        """Send sensor state updates to subscribed clients."""
-        # Cache sensor states for new subscribers
-        self._last_sensor_states.update(sensor_data)
-        
-        if not self._subscribed_to_states or not self._transport:
-            return
-
-        try:
-            responses = []
-            skipped_keys = []
-            
-            for data_key, value in sensor_data.items():
-                # Use reverse mapping for O(1) lookup instead of nested loop
-                entity_info = self._data_key_to_entity.get(data_key)
-                if entity_info:
-                    sensor_state = SensorStateResponse(
-                        key=entity_info['key'],
-                        state=float(value),
-                        missing_state=False,
-                    )
-                    responses.append(sensor_state)
-                else:
-                    # Only log if it's not an expected unmapped key
-                    if not data_key.startswith(('cell_voltage_', 'temperature_', '__', 'function', 'cell_count', 'sensor_count', 'model', 'device_id')):
-                        skipped_keys.append(data_key)
-            
-            if responses:
-                self._send_messages(responses)
-                logger.debug("✅ Sent %d sensor state updates", len(responses))
-                if skipped_keys:
-                    logger.warning("Skipped %d unmapped keys: %s", len(skipped_keys), skipped_keys)
-            else:
-                logger.debug("No sensor states matched configured entities")
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.error("Failed to send sensor states: %s", exc, exc_info=True)
-
     def _send_messages(self, messages: List[Message]) -> None:
-        # Use writelines() to send all packets in a single operation for better latency
+        # Guard on transport instead of writelines since we use write() below.
         if not self._transport:
             return
 
         try:
-            packets = []
+            packets = [
+                (PROTO_TO_MESSAGE_TYPE[msg.__class__], msg.SerializeToString())
+                for msg in messages
+            ]
             for msg in messages:
                 logger.debug("Sending ESPHome message: %s", msg.__class__.__name__)
-                msg_type = PROTO_TO_MESSAGE_TYPE[msg.__class__]
-                payload = msg.SerializeToString()
-                packet = _make_packet(msg_type, payload)
+            payloads = make_plain_text_packets(packets)
+            for payload in payloads:
                 logger.debug("ESPHome packet bytes (len=%d): %s", len(payload), payload.hex())
-                packets.append(packet)
-            
-            # Send all packets at once to reduce TCP buffering delays
-            if packets:
-                if self._writelines:
-                    # Use writelines for all packets (even single ones) to minimize latency
-                    self._writelines(packets)
-                else:
-                    # Fallback to individual writes if writelines not available
-                    for packet in packets:
-                        self._transport.write(packet)  # type: ignore[union-attr]
+                self._transport.write(payload)  # type: ignore[union-attr]
         except Exception as exc:  # pragma: no cover - defensive
             logger.error("Failed to send ESPHome messages: %s", exc, exc_info=True)
 
@@ -652,83 +535,23 @@ class ESPHomeAPIServer:
         self.version = version
         self._server: Optional[asyncio.base_events.Server] = None
         self._advertisement_callback: Optional[Callable[[Callable[[dict], None]], None]] = None
-        self._sensor_entities: Dict[str, Dict] = {}
-        self._active_protocols: List[ESPHomeAPIProtocol] = []
 
     def set_advertisement_callback(self, callback: Callable[[Callable[[dict], None]], None]) -> None:
         self._advertisement_callback = callback
-
-    def set_sensor_entities(self, entities: Dict[str, Dict], replace: bool = True) -> None:
-        """Define sensor entities to expose via the ESPHome API.
-        
-        Args:
-            entities: Dictionary of sensor entities
-            replace: If True, replace all entities. If False, merge with existing.
-        """
-        was_empty = len(self._sensor_entities) == 0
-        
-        if replace:
-            self._sensor_entities = entities
-        else:
-            # Merge new entities with existing
-            self._sensor_entities.update(entities)
-        
-        # Update reverse mapping in all active protocols
-        for protocol in self._active_protocols:
-            protocol._sensor_entities = self._sensor_entities
-            protocol._data_key_to_entity = {}
-            for entity_key, entity_info in self._sensor_entities.items():
-                # Map from the actual data key (e.g., 'power') to the entity info
-                if 'data_key' in entity_info:
-                    protocol._data_key_to_entity[entity_info['data_key']] = entity_info
-        logger.info("Configured %d sensor entities (replace=%s)", len(self._sensor_entities), replace)
-        
-        # If this is the first time entities are added, disconnect clients to force re-discovery
-        if was_empty and len(self._sensor_entities) > 0:
-            logger.warning(
-                "Sensor entities added for first time - disconnecting %d clients to force re-discovery",
-                len(self._active_protocols)
-            )
-            for protocol in list(self._active_protocols):
-                try:
-                    protocol._transport.close()
-                except Exception:
-                    pass
-
-    def send_sensor_states(self, sensor_data: Dict[str, float]) -> None:
-        """Send sensor state updates to all connected clients."""
-        for protocol in self._active_protocols:
-            protocol.send_sensor_states(sensor_data)
 
     async def start(self) -> None:
         loop = asyncio.get_running_loop()
 
         def factory() -> ESPHomeAPIProtocol:
-            protocol = ESPHomeAPIProtocol(
+            return ESPHomeAPIProtocol(
                 self.name,
                 self.mac_address,
                 self.version,
                 self._advertisement_callback,
-                self._sensor_entities,
-                on_disconnect=lambda: self._remove_protocol(protocol),
             )
-            self._active_protocols.append(protocol)
-            return protocol
 
-        # Create server with SO_REUSEADDR and SO_REUSEPORT to allow quick restart
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-        sock.bind(("0.0.0.0", self.port))
-        sock.listen(5)
-        sock.setblocking(False)
-        self._server = await loop.create_server(factory, sock=sock)
+        self._server = await loop.create_server(factory, host="0.0.0.0", port=self.port)
         logger.info("ESPHome native API server listening on %d", self.port)
-
-    def _remove_protocol(self, protocol: ESPHomeAPIProtocol) -> None:
-        """Remove a disconnected protocol from the active list."""
-        if protocol in self._active_protocols:
-            self._active_protocols.remove(protocol)
 
     async def stop(self) -> None:
         if not self._server:

@@ -1,0 +1,79 @@
+
+[device]
+adapter = hci0
+mac_addr = 6C:B2:FD:86:82:4D
+alias = BT-TH-FD86824D
+type = RNG_BATT
+# RNG_CTRL      => Charge Controller (Rover/Wanderer/Adventurer)
+# RNG_CTRL_HIST => Charge Controller historical data
+# RNG_BATT      => Smart Battery
+# RNG_INVT      => Inverter
+# RNG_DCC       => DC Charger
+device_id = 48,49,50,51 # hub mode battery IDs (comma-separated)
+# adjust the ids to match your installation
+
+[data]
+enable_polling = true # periodically read data
+poll_interval = 120 # optional minimum delay between polls (seconds); 0 to defer to proxy cycles
+poll_after_proxy_cycle = true
+poll_cycle_dwell_seconds = 40.0
+poll_cycle_timeout_seconds = 60.0
+temperature_unit = F # F = Fahrenheit, C = Celsius
+fields = # fields to log (comma separated), leave empty for all fields
+
+[remote_logging]
+enabled = false
+url = https://example.com/post.php
+auth_header = auth_header # optional HTTP header sent as "Authorization: Bearer <AUTH_HEADER>"
+
+[mqtt]
+enabled = true
+server = 192.168.1.89
+port = 1883
+topic = solar/state
+user = pi
+password = 12341
+homeassistant_discovery = true
+
+[pvoutput]
+# free accounts has a cap of max one request per minute.
+enabled = false
+api_key =
+system_id =
+
+[home_assistant_proxy]
+enabled = true
+use_native_api = true
+with_renogy_client = true
+
+# ESPHome native API settings
+native_api_port = 6053
+device_name = renogy.proxy
+# Optionally override the IP used for mDNS advertisement (leave blank for auto-detect)
+mdns_ip =
+
+# ESPHome API sensor integration (NEW)
+# When enabled, Renogy sensor data will be sent via the ESPHome API
+# This allows Home Assistant to receive sensor data without using MQTT
+esphome_sensors = true
+
+# Renogy client operation mode:
+# - continuous: Polls Renogy device continuously based on [data] poll_interval (blocks proxy scanning)
+# - scheduled: Reads Renogy device at intervals, yielding to proxy scanning (recommended)
+renogy_poll_mode = continuous
+# Interval between Renogy reads in scheduled mode (seconds) - default 60
+renogy_read_interval = 30
+
+# BLE scanning settings
+adapter = hci0
+# scan_mode = passive
+# Duty cycle (seconds) to periodically pause scanning; leave commented for continuous scanning
+# scan_active_seconds = 0
+# scan_idle_seconds = 0
+pause_during_renogy = false
+airtime_settle_seconds = 0.2
+airtime_window_seconds = 30
+health_check_interval = 30
+health_check_threshold = 45
+health_reset_adapter = true
+health_reset_limit = 3

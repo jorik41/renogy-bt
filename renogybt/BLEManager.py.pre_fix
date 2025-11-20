@@ -7,7 +7,6 @@ from bleak.exc import BleakError
 CREATE_TASK = getattr(asyncio, "create_task", asyncio.ensure_future)
 
 DISCOVERY_TIMEOUT = 5  # max wait time to complete the bluetooth scanning (seconds)
-DISCOVERY_HARD_TIMEOUT = 30  # absolute maximum time for discovery including retries (seconds)
 DISCOVER_RETRIES = 3   # number of times to retry discovery on failure
 DISCOVER_DELAY = 5     # wait time between retries (seconds)
 CONNECT_RETRIES = 3    # number of times to retry connecting
@@ -29,73 +28,51 @@ class BLEManager:
 
     async def discover(self):
         mac_address = self.mac_address.upper()
-        
-        # Wrap entire discovery loop in hard timeout to prevent infinite hangs
-        async def _do_discovery():
-            for attempt in range(1, DISCOVER_RETRIES + 1):
-                try:
-                    logging.info("Starting discovery (attempt %s)...", attempt)
-                    # Add hard timeout wrapper around BleakScanner.discover
-                    # to prevent it from hanging indefinitely
-                    try:
-                        self.discovered_devices = await asyncio.wait_for(
-                            BleakScanner.discover(
-                                timeout=DISCOVERY_TIMEOUT,
-                                adapter=self.adapter,
-                            ),
-                            timeout=DISCOVERY_TIMEOUT + 5  # Extra 5 seconds safety margin
-                        )
-                    except asyncio.TimeoutError:
-                        logging.error('Discovery attempt %s timed out (hard timeout)', attempt)
-                        raise BleakError(f'Discovery attempt {attempt} exceeded hard timeout')
-                    
-                    logging.info("Devices found: %s", len(self.discovered_devices))
-                    for dev in self.discovered_devices:
-                        if dev.address is not None and (
-                            dev.address.upper() == mac_address
-                            or (dev.name and dev.name.strip() == self.device_alias)
-                        ):
-                            logging.info(f"Found matching device {dev.name} => {dev.address}")
-                            self.device = dev
-                            break
-                    if self.device:
+        for attempt in range(1, DISCOVER_RETRIES + 1):
+            try:
+                logging.info("Starting discovery (attempt %s)...", attempt)
+                self.discovered_devices = await BleakScanner.discover(
+                    timeout=DISCOVERY_TIMEOUT,
+                    adapter=self.adapter,
+                )
+                logging.info("Devices found: %s", len(self.discovered_devices))
+                for dev in self.discovered_devices:
+                    if dev.address is not None and (
+                        dev.address.upper() == mac_address
+                        or (dev.name and dev.name.strip() == self.device_alias)
+                    ):
+                        logging.info(f"Found matching device {dev.name} => {dev.address}")
+                        self.device = dev
                         break
-                    logging.warning(
-                        "Target device %s (%s) not discovered on attempt %s",
-                        self.device_alias,
-                        mac_address,
-                        attempt,
-                    )
-                    if attempt < DISCOVER_RETRIES:
-                        await asyncio.sleep(DISCOVER_DELAY)
-                    continue
-                except (BleakError, asyncio.TimeoutError) as exc:
-                    logging.error("Discovery failed: %s", exc)
-                    if attempt < DISCOVER_RETRIES:
-                        await asyncio.sleep(DISCOVER_DELAY)
-                    else:
-                        self.connect_fail_callback(exc)
-                        return
-
-            if not self.device:
-                logging.error(
-                    "Discovery attempts exhausted without finding %s (%s)",
+                if self.device:
+                    break
+                logging.warning(
+                    "Target device %s (%s) not discovered on attempt %s",
                     self.device_alias,
                     mac_address,
+                    attempt,
                 )
-                self.connect_fail_callback(
-                    RuntimeError(
-                        f"BLE discovery failed for {self.device_alias} ({self.mac_address})"
-                    )
-                )
-        
-        # Apply overall hard timeout to entire discovery process
-        try:
-            await asyncio.wait_for(_do_discovery(), timeout=DISCOVERY_HARD_TIMEOUT)
-        except asyncio.TimeoutError:
-            logging.error('BLE discovery exceeded overall hard timeout of %s seconds - force aborting', DISCOVERY_HARD_TIMEOUT)
+                if attempt < DISCOVER_RETRIES:
+                    await asyncio.sleep(DISCOVER_DELAY)
+                continue
+            except BleakError as exc:
+                logging.error("Discovery failed: %s", exc)
+                if attempt < DISCOVER_RETRIES:
+                    await asyncio.sleep(DISCOVER_DELAY)
+                else:
+                    self.connect_fail_callback(exc)
+                    return
+
+        if not self.device:
+            logging.error(
+                "Discovery attempts exhausted without finding %s (%s)",
+                self.device_alias,
+                mac_address,
+            )
             self.connect_fail_callback(
-                RuntimeError(f'BLE discovery exceeded hard timeout ({DISCOVERY_HARD_TIMEOUT}s) - adapter may be stuck')
+                RuntimeError(
+                    f"BLE discovery failed for {self.device_alias} ({self.mac_address})"
+                )
             )
 
     async def connect(self):

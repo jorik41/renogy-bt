@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import socket
 import logging
 from typing import Callable, Dict, List, Optional, Type
 
@@ -112,10 +111,10 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
         self._sensor_entities = sensor_entities or {}
         # Create reverse mapping for O(1) lookups: data_key -> entity_info
         self._data_key_to_entity: Dict[str, Dict] = {}
-        for entity_key, entity_info in self._sensor_entities.items():
-            # Map from the actual data key (e.g., 'power') to the entity info
-            if 'data_key' in entity_info:
-                self._data_key_to_entity[entity_info['data_key']] = entity_info
+        for entity_info in self._sensor_entities.values():
+            data_key = entity_info.get('data_key')
+            if data_key:
+                self._data_key_to_entity[data_key] = entity_info
         self._on_disconnect = on_disconnect
         self._subscribed_to_ble = False
         self._subscribed_to_connections_free = False
@@ -123,7 +122,6 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
         self._scanner_mode = BluetoothScannerMode.BLUETOOTH_SCANNER_MODE_PASSIVE
         self._scanner_state = BluetoothScannerState.BLUETOOTH_SCANNER_STATE_IDLE
         self._buffer: Optional[bytes] = None
-        self._last_sensor_states: Dict[str, float] = {}  # Store last sensor values
         self._buffer_len = 0
         self._pos = 0
         self._transport: Optional[asyncio.Transport] = None
@@ -133,9 +131,6 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
     # asyncio.Protocol API -------------------------------------------------
 
     def connection_made(self, transport: asyncio.Transport) -> None:
-        import sys
-        sys.stderr.write(f'DEBUG: connection_made called! transport={transport}\n')
-        sys.stderr.flush()
         self._transport = transport
         self._writelines = transport.writelines  # type: ignore[attr-defined]
         peer = transport.get_extra_info("peername")
@@ -261,12 +256,11 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
             )
         elif isinstance(message, ListEntitiesRequest):
             # Send sensor entity definitions
-            logger.info("Sending %d sensor entities to Home Assistant", len(self._sensor_entities))
-            for entity_key, entity_info in self._sensor_entities.items():
+            for key, entity_info in self._sensor_entities.items():
                 sensor_response = ListEntitiesSensorResponse(
-                    object_id=entity_info.get('object_id', entity_key),
+                    object_id=entity_info.get('object_id', key),
                     key=entity_info['key'],
-                    name=entity_info.get('name', entity_key),
+                    name=entity_info.get('name', key),
                     icon=entity_info.get('icon', ''),
                     unit_of_measurement=entity_info.get('unit_of_measurement', ''),
                     accuracy_decimals=entity_info.get('accuracy_decimals', 2),
@@ -274,12 +268,6 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
                     device_class=entity_info.get('device_class', ''),
                     state_class=entity_info.get('state_class', SensorStateClass.STATE_CLASS_MEASUREMENT),
                     disabled_by_default=entity_info.get('disabled_by_default', False),
-                )
-                logger.debug(
-                    "Entity: %s (key=%d, unit=%s)",
-                    entity_info.get('object_id', entity_key),
-                    entity_info['key'],
-                    entity_info.get('unit_of_measurement', '')
                 )
                 responses.append(sensor_response)
             responses.append(ListEntitiesDoneResponse())
@@ -349,10 +337,6 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
         elif isinstance(message, SubscribeStatesRequest):
             logger.info("ESPHome client subscribed to sensor states")
             self._subscribed_to_states = True
-            # Resend last known sensor states to new subscriber
-            if self._last_sensor_states:
-                logger.info("Resending %d cached sensor states", len(self._last_sensor_states))
-                self.send_sensor_states(self._last_sensor_states)
         elif isinstance(message, NoiseEncryptionSetKeyRequest):
             logger.info("ESPHome client attempted to set Noise key; rejecting")
             responses.append(NoiseEncryptionSetKeyResponse(success=False))
@@ -533,16 +517,11 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
 
     def send_sensor_states(self, sensor_data: Dict[str, float]) -> None:
         """Send sensor state updates to subscribed clients."""
-        # Cache sensor states for new subscribers
-        self._last_sensor_states.update(sensor_data)
-        
         if not self._subscribed_to_states or not self._transport:
             return
 
         try:
             responses = []
-            skipped_keys = []
-            
             for data_key, value in sensor_data.items():
                 # Use reverse mapping for O(1) lookup instead of nested loop
                 entity_info = self._data_key_to_entity.get(data_key)
@@ -553,18 +532,10 @@ class ESPHomeAPIProtocol(asyncio.Protocol):
                         missing_state=False,
                     )
                     responses.append(sensor_state)
-                else:
-                    # Only log if it's not an expected unmapped key
-                    if not data_key.startswith(('cell_voltage_', 'temperature_', '__', 'function', 'cell_count', 'sensor_count', 'model', 'device_id')):
-                        skipped_keys.append(data_key)
             
             if responses:
                 self._send_messages(responses)
-                logger.debug("✅ Sent %d sensor state updates", len(responses))
-                if skipped_keys:
-                    logger.warning("Skipped %d unmapped keys: %s", len(skipped_keys), skipped_keys)
-            else:
-                logger.debug("No sensor states matched configured entities")
+                logger.debug("Sent %d sensor state updates", len(responses))
         except Exception as exc:  # pragma: no cover - defensive
             logger.error("Failed to send sensor states: %s", exc, exc_info=True)
 
@@ -658,42 +629,18 @@ class ESPHomeAPIServer:
     def set_advertisement_callback(self, callback: Callable[[Callable[[dict], None]], None]) -> None:
         self._advertisement_callback = callback
 
-    def set_sensor_entities(self, entities: Dict[str, Dict], replace: bool = True) -> None:
-        """Define sensor entities to expose via the ESPHome API.
-        
-        Args:
-            entities: Dictionary of sensor entities
-            replace: If True, replace all entities. If False, merge with existing.
-        """
-        was_empty = len(self._sensor_entities) == 0
-        
-        if replace:
-            self._sensor_entities = entities
-        else:
-            # Merge new entities with existing
-            self._sensor_entities.update(entities)
-        
+    def set_sensor_entities(self, entities: Dict[str, Dict]) -> None:
+        """Define sensor entities to expose via the ESPHome API."""
+        self._sensor_entities = entities
         # Update reverse mapping in all active protocols
         for protocol in self._active_protocols:
-            protocol._sensor_entities = self._sensor_entities
+            protocol._sensor_entities = entities
             protocol._data_key_to_entity = {}
-            for entity_key, entity_info in self._sensor_entities.items():
-                # Map from the actual data key (e.g., 'power') to the entity info
-                if 'data_key' in entity_info:
-                    protocol._data_key_to_entity[entity_info['data_key']] = entity_info
-        logger.info("Configured %d sensor entities (replace=%s)", len(self._sensor_entities), replace)
-        
-        # If this is the first time entities are added, disconnect clients to force re-discovery
-        if was_empty and len(self._sensor_entities) > 0:
-            logger.warning(
-                "Sensor entities added for first time - disconnecting %d clients to force re-discovery",
-                len(self._active_protocols)
-            )
-            for protocol in list(self._active_protocols):
-                try:
-                    protocol._transport.close()
-                except Exception:
-                    pass
+            for entity_info in entities.values():
+                data_key = entity_info.get('data_key')
+                if data_key:
+                    protocol._data_key_to_entity[data_key] = entity_info
+        logger.info("Configured %d sensor entities", len(entities))
 
     def send_sensor_states(self, sensor_data: Dict[str, float]) -> None:
         """Send sensor state updates to all connected clients."""
@@ -715,14 +662,7 @@ class ESPHomeAPIServer:
             self._active_protocols.append(protocol)
             return protocol
 
-        # Create server with SO_REUSEADDR and SO_REUSEPORT to allow quick restart
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-        sock.bind(("0.0.0.0", self.port))
-        sock.listen(5)
-        sock.setblocking(False)
-        self._server = await loop.create_server(factory, sock=sock)
+        self._server = await loop.create_server(factory, host="0.0.0.0", port=self.port)
         logger.info("ESPHome native API server listening on %d", self.port)
 
     def _remove_protocol(self, protocol: ESPHomeAPIProtocol) -> None:

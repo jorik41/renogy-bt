@@ -11,14 +11,7 @@ python3 -m pip install -r requirements.txt
 This library should work on any modern Linux/Windows/Mac platforms that supports [Bleak](https://github.com/hbldh/bleak). 
 
 ## Example
-Each device needs a separate [config.ini](https://github.com/cyrils/renogy-bt1/blob/main/config.ini) file. Update the config with the correct values for `mac_addr`, `alias` and `type`.  If your system has multiple bluetooth interfaces you can specify which one to use via the optional `adapter` setting (for example `hci0`). Once configured, install the dependencies and run the example:
-
-Install the dependencies once per environment:
-```sh
-python3 -m pip install -r requirements.txt
-```
-
-If you prefer to use the bundled virtual environment, activate it via `source venv/bin/activate` or run the scripts with `./venv/bin/python`.
+Each device needs a separate [config.ini](https://github.com/cyrils/renogy-bt1/blob/main/config.ini) file. Update the config with the correct values for `mac_addr`, `alias` and `type`.  If your system has multiple bluetooth interfaces you can specify which one to use via the optional `adapter` setting (for example `hci0`). Then run the following command:
 
 ```sh
 python3 ./example.py config.ini
@@ -26,48 +19,123 @@ python3 ./example.py config.ini
 
 The library now retries bluetooth discovery and connection automatically if the adapter is not ready right away. This is helpful on systems that take a moment to power on their bluetooth interface after a reboot.
 
-### Discovering your Renogy Bluetooth address
+### Home Assistant Integration
 
-Use the helper script to list nearby Bluetooth devices. Renogy devices usually start with `BT-TH`, `RNGRBP`, or `BTRIC`.
+The project exposes a native ESPHome API that integrates with Home Assistant in two ways:
+
+1. **Bluetooth Proxy** - Forwards BLE advertisements for discovery
+2. **Renogy Sensors** - Exposes battery/controller data as ESPHome sensors (NEW!)
+
+Enable the `[home_assistant_proxy]` section in `config.ini`
+(`enabled = true` and `use_native_api = true`), then start the proxy:
 
 ```sh
-python3 scan_devices.py --adapter hci0
+python3 ./renogy_bt_proxy.py config.ini
 ```
 
-Devices whose names match a known prefix are flagged with a `*`. Copy the address and name into `config.ini`. When working with a Renogy Smart Battery hub, specify all battery `device_id` values (for example `48,49,50,51`) in the `[device]` section.
+**Automatic Discovery:**
 
-### Home Assistant ESPHome Bluetooth Proxy
+Home Assistant will automatically discover the proxy through mDNS when it's
+running on the same network. The proxy advertises itself as an ESPHome device
+with Bluetooth proxy capabilities and sensor entities. Go to **Settings → Devices & Services** and
+you should see a notification for the discovered device. Simply click
+"Configure" to add it.
 
-Use the ESPHome native API to make the device appear as a native ESPHome Bluetooth proxy in Home Assistant. This provides automatic discovery and seamless integration.
+If your network uses multiple interfaces (for example, ethernet and Wi-Fi) and
+Home Assistant detects the wrong address, set `mdns_ip` under
+`[home_assistant_proxy]` in `config.ini` to the IP you want advertised.
 
-**Features:**
-- Automatic discovery via mDNS/zeroconf
-- Native ESPHome integration (port 6053)
-- Zero configuration in Home Assistant
-- Full Bluetooth proxy functionality
+> **Note:** Recent versions have been optimized to eliminate configuration timeouts that could
+> occur with Home Assistant 2024.11+. If you experienced timeouts during device configuration,
+> updating to the latest version should resolve the issue. See
+> [ESPHOME_CONFIGURATION_FIX.md](docs/ESPHOME_CONFIGURATION_FIX.md) for details.
 
-**Quick Start:**
+**Manual Setup:**
 
-1. Edit `config.ini`:
-```ini
-[home_assistant_proxy]
-enabled = true
-device_name = renogy-bt-proxy
-adapter = hci0
-```
+If automatic discovery doesn't work, you can manually add the proxy:
+1. Go to **Settings → Devices & Services → Add Integration → ESPHome**
+2. Enter the IP address or hostname of the machine running the proxy
+3. Port: `6053` (or the port configured in your `config.ini`)
+4. Leave the password blank unless you configured one
+5. The proxy will appear as a Bluetooth adapter in Home Assistant's Bluetooth
+   settings, allowing you to see BLE advertisements in the Bluetooth visualizer
+6. **NEW:** Renogy sensor entities will automatically appear in Home Assistant,
+   providing real-time data like voltage, current, power, temperature, and battery percentage
 
-2. Run the ESPHome proxy:
+**ESPHome API Sensors (NEW):**
+
+The proxy now sends Renogy device data directly to Home Assistant via the ESPHome API,
+eliminating the need for MQTT. This provides a more efficient and integrated solution.
+
+- **Enable/Disable:** Set `esphome_sensors = true` in `[home_assistant_proxy]` section (enabled by default)
+- **Automatic Creation:** Sensor entities are created automatically on first data read
+- **Smart Attributes:** Units, device classes, and icons are automatically assigned based on sensor type
+- **Works Alongside MQTT:** You can still use MQTT if needed - both methods work independently
+- **No MQTT Required:** If you don't need MQTT, simply set `[mqtt] enabled = false`
+
+The sensors include all Renogy device data:
+- Battery: voltage, current, cell voltages, temperature, SOC, capacity
+- Controller: PV voltage/current/power, charging status, daily statistics
+- Inverter: input/output voltage/current, frequency, load power
+- Combined readings for multi-battery setups
+
+The proxy keeps the Renogy BLE client running alongside the ESPHome Bluetooth
+proxy so a single adapter can forward advertisements and read battery data.
+On resource-constrained boards (like the Raspberry Pi Zero 2 W) the proxy now
+automatically pauses BLE scanning while the Renogy client performs discovery or
+connects, freeing up airtime for Wi-Fi. You can further tune behaviour via the
+`[home_assistant_proxy]` settings in `config.ini`:
+
+- `esphome_sensors = true` (NEW, default) enables sending Renogy data as ESPHome sensors
+  instead of (or in addition to) MQTT
+- `renogy_poll_mode = scheduled` (recommended) makes Renogy reads run at intervals
+  without blocking the proxy scanner. Use `continuous` for the old behavior where
+  Renogy polls continuously based on `[data] poll_interval`.
+- `renogy_read_interval = 60` sets the interval (in seconds) between Renogy device
+  reads when using `scheduled` mode. Default is 60 seconds; set to `0` when you
+  want the proxy-cycle gating to determine timing instead of a fixed delay.
+- `[data].poll_after_proxy_cycle = true` ties scheduled Renogy reads to proxy
+  airtime: the next read waits until the scanner has resumed and held the air
+  for `poll_cycle_dwell_seconds` (defaults to 1s). Set `poll_cycle_timeout_seconds`
+  if the adapter occasionally needs longer to resume scanning.
+- `scan_mode = passive` (optional) keeps the host from issuing active scan
+  requests, which cuts down on radio chatter if you choose to enable it.
+- `scan_active_seconds` / `scan_idle_seconds` let you apply a light duty cycle
+  to scanning if your Wi-Fi link still struggles. Leave the options commented
+  out for continuous scanning (the default behaviour).
+- `pause_during_renogy = true` (optional) temporarily pauses the BLE scanner
+  while the Renogy client performs discovery or connects, giving Wi-Fi
+  every chance to win short contention windows.
+
+**Compatibility Note:**
+
+The proxy uses the modern ESPHome Bluetooth proxy protocol (without legacy
+version fields) to ensure compatibility with current Home Assistant versions.
+If you're upgrading from an older version, Home Assistant should automatically
+recognize the proxy as a Bluetooth scanner after the update.
+
+**Testing the ESPHome API:**
+
+To test and validate the ESPHome API handshake protocol and Bluetooth proxy functionality, use the comprehensive test suite:
+
 ```sh
-python3 ./esphome_proxy_example.py
+# Run all tests against your proxy
+python3 ./tools/comprehensive_esphome_test.py
+
+# Run integration test with mock server
+python3 ./tools/run_integration_test.py
 ```
 
-3. In Home Assistant:
-   - Go to Settings → Devices & Services
-   - Click "+ Add Integration"
-   - Search for "ESPHome"
-   - Your device appears automatically!
+The test suite validates:
+- ✅ Varint encoding/decoding
+- ✅ Device name format (must contain a dot, e.g., `renogy.proxy`)
+- ✅ Message length field accuracy
+- ✅ Complete handshake sequence
+- ✅ DeviceInfo request/response
+- ✅ BLE advertisement subscription
+- ✅ Protocol compliance
 
-📖 **[Full ESPHome Integration Guide](docs/ESPHOME_INTEGRATION.md)**
+See [tools/README_TESTING.md](tools/README_TESTING.md) for detailed documentation.
 
 **How to get mac address?**
 
@@ -142,14 +210,38 @@ If you have multiple devices connected to a single BT-2 module (daisy chained or
 
 ## Data logging
 
-Supports logging data to local MQTT brokers like [Mosquitto](https://mosquitto.org/) or [Home Assistant](https://www.home-assistant.io/) dashboards. You can also log it to third party cloud services like [PVOutput](https://pvoutput.org/). See [config.ini](https://github.com/cyrils/renogy-bt1/blob/main/config.ini) for more details. Note that free PVOutput accounts have a cap of one request per minute.
+**ESPHome API Sensors (Recommended):**
+
+When using the ESPHome proxy with Home Assistant, the recommended approach is to enable
+`esphome_sensors = true` in `[home_assistant_proxy]` section (enabled by default). This
+sends Renogy sensor data directly via the ESPHome API, eliminating the need for a separate
+MQTT broker. Sensors appear automatically in Home Assistant after adding the ESPHome device.
+
+To use only ESPHome sensors (no MQTT):
+```ini
+[home_assistant_proxy]
+enabled = true
+esphome_sensors = true  # Default, can be omitted
+
+[mqtt]
+enabled = false  # Disable MQTT if not needed
+```
+
+**MQTT (Alternative/Legacy):**
+
+You can also use MQTT for data logging to local MQTT brokers like [Mosquitto](https://mosquitto.org/)
+or [Home Assistant](https://www.home-assistant.io/) dashboards. You can also log to third party cloud
+services like [PVOutput](https://pvoutput.org/). See [config.ini](https://github.com/cyrils/renogy-bt1/blob/main/config.ini)
+for more details. Note that free PVOutput accounts have a cap of one request per minute.
+
+Both ESPHome sensors and MQTT can be used simultaneously if desired.
 
 When multiple `device_id`s are configured (e.g. `48,49` when using a BT‑2 hub), data from each device is published to a unique MQTT topic in the form `<base_topic>/<alias>_<device_id>`. For a single device the `<device_id>` suffix is still added, ensuring every device has its own topic. Up to eight battery devices can be listed and will be combined using `Utils.combine_battery_readings`.
 The combined payload also exposes `combined_energy_in_kwh` and `combined_energy_out_kwh` which sum the energy in and out across all batteries.
 Energy totals for each device are written to `energy_totals.json`. Each update
 stores the accumulated mAh with a timestamp so the `energy_in_kwh` and
 `energy_out_kwh` values reflect the real energy transferred between polls.
-These totals are published as energy sensors via MQTT and can be selected
+These totals are published as energy sensors via MQTT (or ESPHome API) and can be selected
 directly in the Home Assistant energy dashboard.
 
 If you enable `homeassistant_discovery` under the `[mqtt]` section in `config.ini`, sensors will be automatically created in Home Assistant using MQTT discovery. Alternatively you can configure them manually as shown below:
